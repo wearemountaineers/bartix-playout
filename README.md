@@ -27,6 +27,7 @@ Ideal for use as a **fixed playout server** (e.g., in retail, broadcast, or sign
 | `systemd/stream-player.service` | Systemd service definition for auto-start and recovery |
 | `scripts/install.sh` | Installs dependencies, configures service, and enables it |
 | `scripts/test-run.sh` | Simple test script to run manually (without systemd) |
+| `stream.json` | Example JSON manifest file |
 | `README.md` | Documentation |
 | `LICENSE` | MIT license |
 
