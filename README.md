@@ -39,14 +39,14 @@ Ideal for use as a **fixed playout server** (e.g., in retail, broadcast, or sign
 On your Raspberry Pi (running Raspberry Pi OS Lite or Desktop):
 
 ```bash
-git clone https://github.com/yourusername/raspi-fixed-playout.git
-cd raspi-fixed-playout
+git clone https://github.com/wearemountaineers/bartix-playout
+cd bartix-playout
 ```
 
 or copy the ZIP and extract it:
 ```bash
-unzip raspi-fixed-playout.zip
-cd raspi-fixed-playout
+unzip bartix-playout.zip
+cd bartix-playout
 ```
 
 ---
