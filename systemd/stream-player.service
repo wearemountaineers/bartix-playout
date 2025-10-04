@@ -1,0 +1,51 @@
+[Unit]
+Description=Fixed playout: fetch manifest and play MP3 stream
+Wants=network-online.target sound.target
+After=network-online.target sound.target alsa-restore.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+# >>> CHANGE THIS to your login user that has audio access (e.g., admin or pi)
+User=admin
+Group=audio
+
+# Configuration (edit these)
+Environment=STREAM_MANIFEST_URL=https://alive-radio.s3.eu-west-1.amazonaws.com/stream.json
+# Stable, named ALSA device (Headphones or HDMI). See README for options.
+Environment=MPV_AUDIO_DEVICE=alsa/plughw:CARD=Headphones,DEV=0
+Environment=DEFAULT_VOLUME=
+Environment=MANIFEST_REFRESH_SEC=300
+Environment=HTTP_TIMEOUT_SEC=6
+Environment=HOME=/tmp
+
+# Wait until ALSA devices exist (up to ~20s)
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 20); do ls /dev/snd/pcm* >/dev/null 2>&1 && exit 0; sleep 1; done; echo "ALSA not ready"; exit 1'
+
+# The supervisor
+ExecStart=/usr/bin/env python3 /usr/local/bin/bootstream.py
+
+# Watchdog & restart
+WatchdogSec=30
+Restart=always
+RestartSec=1
+
+# Resource & reliability
+LimitNOFILE=1024
+Nice=-5
+OOMScoreAdjust=-900
+
+# Security (moderate hardening safe for audio/network)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
