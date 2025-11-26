@@ -142,6 +142,42 @@ def configure_wifi(ssid, password=None):
     # Restart network services to apply configuration
     restart_network_services()
     
+    import time
+    
+    # Check if wpa_supplicant is running
+    print("[network-config] Checking wpa_supplicant status...", flush=True)
+    result = subprocess.run(
+        ["systemctl", "is-active", "wpa_supplicant"],
+        capture_output=True,
+        text=True,
+        check=False
+    )
+    if result.returncode != 0:
+        print("[network-config] Warning: wpa_supplicant is not running, attempting to start...", flush=True)
+        subprocess.run(
+            ["systemctl", "start", "wpa_supplicant"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE
+        )
+        time.sleep(2)
+    
+    # Check wpa_supplicant status immediately
+    result = subprocess.run(
+        ["wpa_cli", "-i", "wlan0", "status"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=2
+    )
+    if result.returncode == 0:
+        print(f"[network-config] Initial wpa_supplicant status:", flush=True)
+        for line in result.stdout.splitlines():
+            if line.strip():
+                print(f"[network-config]   {line}", flush=True)
+    else:
+        print(f"[network-config] Warning: Could not get wpa_supplicant status: {result.stderr}", flush=True)
+    
     # Monitor WiFi connection status
     print("[network-config] Monitoring WiFi connection status...", flush=True)
     import time
@@ -173,6 +209,8 @@ def configure_wifi(ssid, password=None):
         
         # Check wpa_supplicant status
         wpa_status = "unknown"
+        wpa_ssid = ""
+        wpa_bssid = ""
         result = subprocess.run(
             ["wpa_cli", "-i", "wlan0", "status"],
             capture_output=True,
@@ -184,7 +222,14 @@ def configure_wifi(ssid, password=None):
             for line in result.stdout.splitlines():
                 if line.startswith("wpa_state="):
                     wpa_status = line.split("=", 1)[1].strip()
-                    break
+                elif line.startswith("ssid="):
+                    wpa_ssid = line.split("=", 1)[1].strip()
+                elif line.startswith("bssid="):
+                    wpa_bssid = line.split("=", 1)[1].strip()
+        
+        # Log detailed status every 6 seconds (every 3rd check)
+        if (i // check_interval) % 3 == 0 and i > 0:
+            print(f"[network-config] Detailed status - State: {wpa_status}, SSID: {wpa_ssid or 'none'}, BSSID: {wpa_bssid or 'none'}", flush=True)
         
         if has_ip:
             print(f"[network-config] ✓ WiFi connection successful!", flush=True)
@@ -220,8 +265,36 @@ def configure_wifi(ssid, password=None):
     else:
         print(f"[network-config] ⚠ WiFi configuration applied but no IP address obtained after {max_wait}s", flush=True)
         print(f"[network-config] Connection state: {wpa_status}", flush=True)
-        print(f"[network-config] This may be normal if the network requires additional authentication or has slow DHCP", flush=True)
+        
+        # Get final detailed status
+        result = subprocess.run(
+            ["wpa_cli", "-i", "wlan0", "status"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2
+        )
+        if result.returncode == 0:
+            print(f"[network-config] Final wpa_supplicant status:", flush=True)
+            for line in result.stdout.splitlines():
+                if line.strip():
+                    print(f"[network-config]   {line}", flush=True)
+        
+        # Check wpa_supplicant logs for errors
+        result = subprocess.run(
+            ["journalctl", "-u", "wpa_supplicant", "-n", "20", "--no-pager"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            print(f"[network-config] Recent wpa_supplicant logs:", flush=True)
+            for line in result.stdout.splitlines()[-10:]:  # Last 10 lines
+                if line.strip():
+                    print(f"[network-config]   {line}", flush=True)
+        
         print(f"[network-config] Check connection status: wpa_cli -i wlan0 status", flush=True)
+        print(f"[network-config] Check wpa_supplicant logs: journalctl -u wpa_supplicant -f", flush=True)
         return False
 
 
@@ -359,16 +432,45 @@ def restart_network_services():
     
     try:
         # Restart wpa_supplicant AFTER dhcpcd
-        subprocess.run(
+        print("[network-config] Restarting wpa_supplicant...", flush=True)
+        result = subprocess.run(
             ["systemctl", "restart", "wpa_supplicant"],
             check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE
+            capture_output=True,
+            text=True
         )
         print("[network-config] wpa_supplicant restarted", flush=True)
-        time.sleep(3)  # Give wpa_supplicant time to connect
+        
+        # Check if wpa_supplicant started successfully
+        time.sleep(2)
+        status_result = subprocess.run(
+            ["systemctl", "is-active", "wpa_supplicant"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if status_result.returncode == 0:
+            print("[network-config] wpa_supplicant is active", flush=True)
+        else:
+            print("[network-config] Warning: wpa_supplicant may not be running", flush=True)
+            # Check for errors
+            error_result = subprocess.run(
+                ["systemctl", "status", "wpa_supplicant", "-n", "10", "--no-pager"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if error_result.returncode == 0:
+                print(f"[network-config] wpa_supplicant status:", flush=True)
+                for line in error_result.stdout.splitlines()[-5:]:
+                    if line.strip():
+                        print(f"[network-config]   {line}", flush=True)
+        
+        time.sleep(1)  # Give wpa_supplicant a bit more time to initialize
     except subprocess.CalledProcessError as e:
         print(f"[network-config] Warning: Failed to restart wpa_supplicant: {e}", flush=True)
+        if hasattr(e, 'stderr') and e.stderr:
+            print(f"[network-config] Error details: {e.stderr}", flush=True)
         # Continue anyway
     
     # Give services time to settle
