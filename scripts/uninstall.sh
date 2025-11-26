@@ -70,7 +70,17 @@ sudo rm -rf /usr/local/share/bartix
 # Clean up network configuration
 echo "Cleaning up network configuration..."
 if [ -f /etc/dhcpcd.conf ]; then
-    sudo sed -i '/denyinterfaces wlan0/d' /etc/dhcpcd.conf 2>/dev/null || true
+    # Remove both old (wlan0) and new (wlan0_ap) denyinterfaces entries
+    sudo sed -i '/denyinterfaces wlan0$/d' /etc/dhcpcd.conf 2>/dev/null || true
+    sudo sed -i '/denyinterfaces wlan0_ap/d' /etc/dhcpcd.conf 2>/dev/null || true
+fi
+
+# Remove virtual AP interface if it exists
+echo "Removing virtual AP interface..."
+if ip link show wlan0_ap >/dev/null 2>&1; then
+    sudo ip link set wlan0_ap down 2>/dev/null || true
+    sudo iw dev wlan0_ap del 2>/dev/null || true
+    echo "Virtual AP interface wlan0_ap removed"
 fi
 
 if [ -f /etc/default/hostapd ]; then

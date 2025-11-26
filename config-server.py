@@ -573,25 +573,8 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
     def scan_wifi_networks(self):
         """Scan for available WiFi networks."""
         try:
-            # Temporarily stop hostapd if running (needed to scan)
-            hostapd_running = False
-            try:
-                result = subprocess.run(
-                    ["systemctl", "is-active", "--quiet", "hostapd"],
-                    check=False
-                )
-                if result.returncode == 0:
-                    hostapd_running = True
-                    print("[config-server] Stopping hostapd temporarily for scan...", flush=True)
-                    subprocess.run(
-                        ["systemctl", "stop", "hostapd"],
-                        check=False,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL
-                    )
-                    time.sleep(2)
-            except Exception:
-                pass
+            # With AP+STA concurrent support, wlan0 (for scanning) and wlan0_ap (for hotspot) are separate
+            # No need to stop hostapd - scanning on wlan0 doesn't interfere with hotspot on wlan0_ap
             
             # Unblock WiFi
             subprocess.run(
@@ -685,16 +668,7 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
                         networks.append(current_network)
                     scan_success = True
             
-            # Restart hostapd if it was running
-            if hostapd_running:
-                time.sleep(1)
-                print("[config-server] Restarting hostapd after scan...", flush=True)
-                subprocess.run(
-                    ["systemctl", "start", "hostapd"],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
+            # No need to restart hostapd - it continues running on wlan0_ap during scan
             
             if scan_success:
                 # Remove duplicates and sort by signal strength
@@ -729,24 +703,8 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
             return
         
         try:
-            # Temporarily stop hostapd if running
-            hostapd_running = False
-            try:
-                result = subprocess.run(
-                    ["systemctl", "is-active", "--quiet", "hostapd"],
-                    check=False
-                )
-                if result.returncode == 0:
-                    hostapd_running = True
-                    subprocess.run(
-                        ["systemctl", "stop", "hostapd"],
-                        check=False,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL
-                    )
-                    time.sleep(2)
-            except Exception:
-                pass
+            # With AP+STA concurrent support, wlan0 (for testing) and wlan0_ap (for hotspot) are separate
+            # No need to stop hostapd - testing WiFi on wlan0 doesn't interfere with hotspot on wlan0_ap
             
             # Create temporary wpa_supplicant config
             import tempfile
@@ -832,15 +790,7 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
             except:
                 pass
             
-            # Restart hostapd if it was running
-            if hostapd_running:
-                time.sleep(1)
-                subprocess.run(
-                    ["systemctl", "start", "hostapd"],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
+            # No need to restart hostapd - it continues running on wlan0_ap during test
             
             if has_ip:
                 self.send_json_response(200, {

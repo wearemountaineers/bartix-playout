@@ -332,8 +332,8 @@ The system automatically:
 | Issue | Solution |
 |-------|----------|
 | Can't connect to hotspot | Check WiFi adapter is enabled: `sudo rfkill unblock wifi` |
-| Hotspot not visible/not broadcasting | Check logs: `journalctl -u network-manager.service -f`<br>Verify regulatory domain: `iw reg get`<br>Check transmit power: `iw dev wlan0 info \| grep txpower`<br>Set transmit power manually: `sudo iw dev wlan0 set txpower fixed 2000`<br>Restart hostapd: `sudo systemctl restart hostapd` |
-| Hotspot not starting | Check logs: `journalctl -u network-manager.service -f`<br>Check hostapd logs: `journalctl -u hostapd -n 50`<br>Verify interface is available: `ip link show wlan0`<br>Check if hostapd is masked: `systemctl status hostapd` |
+| Hotspot not visible/not broadcasting | Check logs: `journalctl -u network-manager.service -f`<br>Verify regulatory domain: `iw reg get`<br>Check transmit power: `iw dev wlan0_ap info \| grep txpower`<br>Set transmit power manually: `sudo iw dev wlan0_ap set txpower fixed 2000`<br>Restart hostapd: `sudo systemctl restart hostapd` |
+| Hotspot not starting | Check logs: `journalctl -u network-manager.service -f`<br>Check hostapd logs: `journalctl -u hostapd -n 50`<br>Verify virtual interface exists: `ip link show wlan0_ap`<br>Create virtual interface: `sudo iw phy phy0 interface add wlan0_ap type __ap`<br>Check if hostapd is masked: `systemctl status hostapd` |
 | Configuration not applying | Check network-config.py logs and verify file permissions |
 | Can't access web interface | Ensure config-server is running: `sudo systemctl status config-server.service`<br>Check if port 8080 is accessible: `curl http://192.168.4.1:8080` |
 | Can't scan for WiFi networks | When scanning for WiFi networks, the system temporarily pauses the hotspot. Use another device (phone, laptop) to scan if needed. |
@@ -352,24 +352,29 @@ sudo journalctl -u network-manager.service -f
 sudo journalctl -u hostapd -n 50 --no-pager
 
 # Check interface status
-iw dev wlan0 info
+iw dev wlan0 info          # Physical interface (STA mode)
+iw dev wlan0_ap info       # Virtual interface (AP mode)
 ip link show wlan0
+ip link show wlan0_ap
 
 # Check regulatory domain and transmit power
 iw reg get
-iw dev wlan0 info | grep txpower
+iw dev wlan0_ap info | grep txpower
 
 # Verify hotspot is broadcasting (from another device)
 # Or check hostapd_cli status
-sudo hostapd_cli -i wlan0 status
-sudo hostapd_cli -i wlan0 get_config ssid
+sudo hostapd_cli -i wlan0_ap status
+sudo hostapd_cli -i wlan0_ap get_config ssid
 
 # Manually set transmit power if needed
-sudo iw dev wlan0 set txpower fixed 2000
+sudo iw dev wlan0_ap set txpower fixed 2000
+
+# Create virtual interface if missing
+sudo iw phy phy0 interface add wlan0_ap type __ap
 ```
 
 **Important Notes:**
-- **Scanning Limitation**: When `wlan0` is in AP mode (hotspot active), you cannot use `iwlist wlan0 scan` or `iw dev wlan0 scan` from the same device. You must scan from another device (phone, laptop, etc.) or temporarily stop the hotspot.
+- **Scanning**: With AP+STA concurrent support, `wlan0` is used for STA mode and can scan normally. The hotspot runs on `wlan0_ap`, so scanning doesn't interfere with the hotspot.
 - **Regulatory Domain**: The system automatically sets the regulatory domain based on `/etc/wpa_supplicant/wpa_supplicant.conf` or defaults to `NL`. This is critical for hotspot visibility.
 - **Transmit Power**: The system sets transmit power to maximum (20 dBm = 2000 mW) for best visibility. If the hotspot is not visible, manually set it: `sudo iw dev wlan0 set txpower fixed 2000`.
 - **Hotspot Verification**: The system uses `hostapd_cli` to verify the SSID is actually being broadcast. Check logs for verification status.
