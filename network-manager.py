@@ -267,39 +267,10 @@ def verify_hotspot_broadcasting():
                 print(f"[network-manager] Warning: hostapd_cli check failed (return code {result.returncode})", flush=True)
                 print(f"[network-manager] hostapd_cli error: {result.stderr}", flush=True)
         
-        # Check regulatory domain (only warn once, not repeatedly)
-        # The regulatory domain should be set in start_hotspot() and main_loop()
-        # This check is just informational
-        result = subprocess.run(
-            ["iw", "reg", "get"],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        if result.returncode == 0:
-            # Check if phy#0 still has country 99 (this is the actual interface setting)
-            if "phy#0 country 99" in result.stdout or "DFS-UNSET" in result.stdout:
-                # Try to set it at the phy level as well
-                country_code = "NL"  # default
-                try:
-                    if os.path.exists("/etc/wpa_supplicant/wpa_supplicant.conf"):
-                        with open("/etc/wpa_supplicant/wpa_supplicant.conf", "r") as f:
-                            for line in f:
-                                if line.strip().startswith("country="):
-                                    country_code = line.split("=")[1].strip().upper()
-                                    break
-                except Exception:
-                    pass
-                
-                # Set at phy level (this is what actually matters for the interface)
-                print(f"[network-manager] Setting regulatory domain at phy level to {country_code}...", flush=True)
-                subprocess.run(
-                    ["iw", "reg", "set", country_code],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-                time.sleep(1)
+        # Regulatory domain check removed from verification function
+        # Setting regulatory domain repeatedly interferes with WiFi client setup
+        # It should only be set during hotspot startup, not during verification
+        # The regulatory domain is set in start_hotspot() and main_loop() initialization
         
         return True
     except Exception as e:
