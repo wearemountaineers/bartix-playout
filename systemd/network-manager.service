@@ -14,7 +14,7 @@ User=root
 Environment=NETWORK_WAIT_TIMEOUT=30
 Environment=HOTSPOT_SSID=bartix-config
 Environment=HOTSPOT_PASSWORD=bartix-config
-Environment=HOTSPOT_INTERFACE=wlan0
+Environment=HOTSPOT_INTERFACE=wlan0_ap
 Environment=HOTSPOT_IP=192.168.4.1
 # Don't wait too long for network-online (it may never come)
 TimeoutStartSec=90
@@ -22,6 +22,8 @@ TimeoutStartSec=90
 ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do [ -e /sys/class/net/wlan0 ] && break; sleep 1; done'
 ExecStartPre=/bin/sh -c 'rfkill unblock wifi || true'
 ExecStartPre=/bin/sh -c 'sleep 2'
+# Create virtual AP interface if it doesn't exist
+ExecStartPre=/bin/sh -c 'if ! ip link show wlan0_ap >/dev/null 2>&1; then iw phy phy0 interface add wlan0_ap type __ap || true; sleep 1; fi'
 ExecStartPre=/bin/sh -c 'iw dev wlan0 set txpower fixed 2000 || true'
 ExecStartPre=/bin/sh -c 'iw reg set NL || true'
 ExecStart=/usr/bin/env python3 /usr/local/bin/network-manager.py

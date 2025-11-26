@@ -21,7 +21,7 @@ CONNECTIVITY_TEST_URL = os.environ.get("CONNECTIVITY_TEST_URL", "https://www.goo
 CONNECTIVITY_TEST_TIMEOUT = int(os.environ.get("CONNECTIVITY_TEST_TIMEOUT", "5"))
 HOTSPOT_SSID = os.environ.get("HOTSPOT_SSID", "bartix-config")
 HOTSPOT_PASSWORD = os.environ.get("HOTSPOT_PASSWORD", "bartix-config")
-HOTSPOT_INTERFACE = os.environ.get("HOTSPOT_INTERFACE", "wlan0")
+HOTSPOT_INTERFACE = os.environ.get("HOTSPOT_INTERFACE", "wlan0_ap")
 HOTSPOT_IP = os.environ.get("HOTSPOT_IP", "192.168.4.1")
 HOTSPOT_NETMASK = os.environ.get("HOTSPOT_NETMASK", "255.255.255.0")
 
@@ -341,7 +341,7 @@ def stop_hotspot():
 def start_hotspot():
     """Start WiFi hotspot."""
     try:
-        # Check if interface exists
+        # Check if interface exists, create it if it's the virtual AP interface
         result = subprocess.run(
             ["ip", "link", "show", HOTSPOT_INTERFACE],
             capture_output=True,
@@ -349,22 +349,19 @@ def start_hotspot():
             check=False
         )
         if result.returncode != 0:
-            print(f"[network-manager] Error: Interface {HOTSPOT_INTERFACE} not found", flush=True)
-            return False
+            if HOTSPOT_INTERFACE == "wlan0_ap":
+                # Try to create the virtual AP interface
+                print(f"[network-manager] Virtual AP interface {HOTSPOT_INTERFACE} not found, creating...", flush=True)
+                if not create_virtual_ap_interface(HOTSPOT_INTERFACE):
+                    print(f"[network-manager] Error: Could not create virtual AP interface {HOTSPOT_INTERFACE}", flush=True)
+                    return False
+            else:
+                print(f"[network-manager] Error: Interface {HOTSPOT_INTERFACE} not found", flush=True)
+                return False
         
-        # Check if interface is already in managed mode (WiFi client mode)
-        # This happens when WiFi credentials are configured and wpa_supplicant is using wlan0
-        result = subprocess.run(
-            ["iw", "dev", HOTSPOT_INTERFACE, "info"],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        if result.returncode == 0 and "type managed" in result.stdout:
-            print(f"[network-manager] Interface {HOTSPOT_INTERFACE} is in managed mode (WiFi client).", flush=True)
-            print(f"[network-manager] Cannot start hotspot - interface is being used for WiFi client connection.", flush=True)
-            print(f"[network-manager] Hotspot will be available when WiFi client is not connected.", flush=True)
-            return False
+        # With AP+STA concurrent support, wlan0_ap is a virtual interface dedicated to AP mode
+        # wlan0 can be in managed mode (STA) while wlan0_ap is in AP mode - they don't conflict
+        # No need to check for managed mode on the hotspot interface
         
         # Check if interface supports AP mode
         if not check_interface_supports_ap_mode(HOTSPOT_INTERFACE):
@@ -381,36 +378,30 @@ def start_hotspot():
         )
         time.sleep(1)
         
-        # Stop wpa_supplicant if it's running (it conflicts with hostapd)
-        print(f"[network-manager] Stopping wpa_supplicant...", flush=True)
-        subprocess.run(
-            ["systemctl", "stop", "wpa_supplicant"],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        time.sleep(1)
+        # With AP+STA concurrent support, wpa_supplicant (on wlan0) and hostapd (on wlan0_ap) don't conflict
+        # No need to stop wpa_supplicant
         
-        # CRITICAL: Add denyinterfaces wlan0 to dhcpcd.conf
-        # This prevents dhcpcd from managing wlan0 (we set static IP for hotspot)
+        # CRITICAL: Add denyinterfaces wlan0_ap to dhcpcd.conf
+        # This prevents dhcpcd from managing the virtual AP interface (we set static IP for hotspot)
+        # Note: wlan0 should NOT be denied - it's used for STA mode and needs dhcpcd
         print(f"[network-manager] Preventing dhcpcd from managing {HOTSPOT_INTERFACE}...", flush=True)
         dhcpcd_conf = "/etc/dhcpcd.conf"
         if os.path.exists(dhcpcd_conf):
             with open(dhcpcd_conf, 'r') as f:
                 dhcpcd_lines = f.readlines()
             
-            # Check if denyinterfaces wlan0 already exists
+            # Check if denyinterfaces wlan0_ap already exists
             has_deny = False
             for line in dhcpcd_lines:
-                if "denyinterfaces wlan0" in line.strip():
+                if f"denyinterfaces {HOTSPOT_INTERFACE}" in line.strip():
                     has_deny = True
                     break
             
             if not has_deny:
-                # Add denyinterfaces wlan0
+                # Add denyinterfaces wlan0_ap
                 with open(dhcpcd_conf, 'a') as f:
-                    f.write("denyinterfaces wlan0\n")
-                print(f"[network-manager] Added 'denyinterfaces wlan0' to dhcpcd.conf", flush=True)
+                    f.write(f"denyinterfaces {HOTSPOT_INTERFACE}\n")
+                print(f"[network-manager] Added 'denyinterfaces {HOTSPOT_INTERFACE}' to dhcpcd.conf", flush=True)
                 
                 # Restart dhcpcd to apply the change
                 subprocess.run(
@@ -421,7 +412,7 @@ def start_hotspot():
                 )
                 time.sleep(1)
             else:
-                print(f"[network-manager] 'denyinterfaces wlan0' already in dhcpcd.conf", flush=True)
+                print(f"[network-manager] 'denyinterfaces {HOTSPOT_INTERFACE}' already in dhcpcd.conf", flush=True)
         
         # Unmask hostapd if it's masked (required before starting)
         subprocess.run(
@@ -734,6 +725,78 @@ def start_hotspot():
         return False
 
 
+def create_virtual_ap_interface(interface_name="wlan0_ap", phy="phy0"):
+    """
+    Create a virtual AP interface for concurrent AP+STA operation.
+    
+    Args:
+        interface_name: Name of the virtual interface to create (default: wlan0_ap)
+        phy: Physical device name (default: phy0)
+    
+    Returns:
+        bool: True if interface exists or was created successfully
+    """
+    try:
+        # Check if interface already exists
+        result = subprocess.run(
+            ["ip", "link", "show", interface_name],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if result.returncode == 0:
+            print(f"[network-manager] Virtual AP interface {interface_name} already exists", flush=True)
+            return True
+        
+        # Check if phy device exists
+        result = subprocess.run(
+            ["iw", "phy", phy, "info"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if result.returncode != 0:
+            print(f"[network-manager] Error: Physical device {phy} not found", flush=True)
+            return False
+        
+        # Create virtual AP interface
+        print(f"[network-manager] Creating virtual AP interface {interface_name} on {phy}...", flush=True)
+        result = subprocess.run(
+            ["iw", "phy", phy, "interface", "add", interface_name, "type", "__ap"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        if result.returncode != 0:
+            error_msg = result.stderr or result.stdout or "Unknown error"
+            print(f"[network-manager] Error creating virtual AP interface: {error_msg}", flush=True)
+            return False
+        
+        # Wait a moment for interface to appear
+        time.sleep(1)
+        
+        # Verify interface was created
+        result = subprocess.run(
+            ["ip", "link", "show", interface_name],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if result.returncode == 0:
+            print(f"[network-manager] Virtual AP interface {interface_name} created successfully", flush=True)
+            return True
+        else:
+            print(f"[network-manager] Warning: Interface {interface_name} not found after creation", flush=True)
+            return False
+    
+    except Exception as e:
+        print(f"[network-manager] Error creating virtual AP interface: {e}", flush=True)
+        import traceback
+        print(f"[network-manager] Traceback: {traceback.format_exc()}", flush=True)
+        return False
+
+
 def check_interface_supports_ap_mode(interface):
     """Check if WiFi interface supports AP (access point) mode."""
     try:
@@ -803,30 +866,39 @@ def main_loop():
     
     print("[network-manager] Starting network manager...", flush=True)
     
-    # Wait for WiFi interface to be available (important on boot)
-    print("[network-manager] Waiting for WiFi interface to be available...", flush=True)
+    # Wait for physical WiFi interface (wlan0) to be available
+    print("[network-manager] Waiting for physical WiFi interface (wlan0) to be available...", flush=True)
     interface_wait_timeout = 30
-    interface_available = False
+    wlan0_available = False
     for i in range(interface_wait_timeout):
         try:
             result = subprocess.run(
-                ["ip", "link", "show", HOTSPOT_INTERFACE],
+                ["ip", "link", "show", "wlan0"],
                 capture_output=True,
                 text=True,
                 check=False
             )
             if result.returncode == 0:
-                interface_available = True
-                print(f"[network-manager] WiFi interface {HOTSPOT_INTERFACE} is available", flush=True)
+                wlan0_available = True
+                print(f"[network-manager] Physical WiFi interface wlan0 is available", flush=True)
                 break
         except Exception:
             pass
         if i < interface_wait_timeout - 1:
             time.sleep(1)
     
-    if not interface_available:
-        print(f"[network-manager] Warning: WiFi interface {HOTSPOT_INTERFACE} not found after {interface_wait_timeout}s", flush=True)
-        print("[network-manager] Will continue and retry hotspot start in monitor loop", flush=True)
+    if not wlan0_available:
+        print(f"[network-manager] Warning: Physical WiFi interface wlan0 not found after {interface_wait_timeout}s", flush=True)
+        print("[network-manager] Will continue and retry in monitor loop", flush=True)
+    
+    # Create virtual AP interface if it doesn't exist
+    if HOTSPOT_INTERFACE == "wlan0_ap":
+        print(f"[network-manager] Ensuring virtual AP interface {HOTSPOT_INTERFACE} exists...", flush=True)
+        if not create_virtual_ap_interface(HOTSPOT_INTERFACE):
+            print(f"[network-manager] Warning: Could not create virtual AP interface {HOTSPOT_INTERFACE}", flush=True)
+            print("[network-manager] Will continue and retry in monitor loop", flush=True)
+        else:
+            print(f"[network-manager] Virtual AP interface {HOTSPOT_INTERFACE} is ready", flush=True)
     
     # Set WiFi country code if not set (required for AP mode)
     # This must be done early and persistently
@@ -951,39 +1023,38 @@ def main_loop():
                 has_ip, has_internet = has_network_connectivity()
                 
                 # Ensure hotspot is running and broadcasting (always available requirement)
-                # BUT: Only if wlan0 is not in managed mode (WiFi client mode)
-                # When WiFi credentials are configured, wlan0 is used for client connection
-                # and hotspot cannot run on the same interface
-                result = subprocess.run(
-                    ["iw", "dev", HOTSPOT_INTERFACE, "info"],
-                    capture_output=True,
-                    text=True,
-                    check=False
-                )
-                wlan0_in_managed_mode = False
-                if result.returncode == 0 and "type managed" in result.stdout:
-                    wlan0_in_managed_mode = True
-                    # wlan0 is being used for WiFi client - don't start hotspot
-                    # This is expected when WiFi is configured
-                    # Hotspot will be available when WiFi client disconnects
+                # With AP+STA concurrent support, hotspot (wlan0_ap) and WiFi client (wlan0) can run simultaneously
+                # No need to check if wlan0 is in managed mode - they use different interfaces
                 
-                if not wlan0_in_managed_mode:
-                    # wlan0 is available - try to start/restart hotspot
-                    if not is_hotspot_running() or not verify_hotspot_broadcasting():
-                        if not is_hotspot_running():
-                            # Start if not running
-                            if ensure_hotspot_config():
-                                start_hotspot()
-                        else:
-                            # Service is running but not broadcasting - restart it
-                            print("[network-manager] Hotspot service running but not broadcasting, restarting...", flush=True)
-                            subprocess.run(
-                                ["systemctl", "restart", HOSTAPD_SERVICE],
-                                check=False,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL
-                            )
-                            time.sleep(2)
+                # Ensure virtual AP interface exists
+                if HOTSPOT_INTERFACE == "wlan0_ap":
+                    result = subprocess.run(
+                        ["ip", "link", "show", HOTSPOT_INTERFACE],
+                        capture_output=True,
+                        text=True,
+                        check=False
+                    )
+                    if result.returncode != 0:
+                        # Virtual interface doesn't exist, try to create it
+                        print(f"[network-manager] Virtual AP interface {HOTSPOT_INTERFACE} not found, creating...", flush=True)
+                        create_virtual_ap_interface(HOTSPOT_INTERFACE)
+                
+                # Try to start/restart hotspot
+                if not is_hotspot_running() or not verify_hotspot_broadcasting():
+                    if not is_hotspot_running():
+                        # Start if not running
+                        if ensure_hotspot_config():
+                            start_hotspot()
+                    else:
+                        # Service is running but not broadcasting - restart it
+                        print("[network-manager] Hotspot service running but not broadcasting, restarting...", flush=True)
+                        subprocess.run(
+                            ["systemctl", "restart", HOSTAPD_SERVICE],
+                            check=False,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL
+                        )
+                        time.sleep(2)
                 
                 last_check = now
             

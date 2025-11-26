@@ -55,42 +55,19 @@ def configure_wifi(ssid, password=None):
     """
     print(f"[network-config] Configuring WiFi: {ssid}", flush=True)
     
-    # IMPORTANT: Stop hotspot before configuring WiFi (wlan0 conflict)
-    # The hotspot uses wlan0 in AP mode, but WiFi client needs it in managed mode
-    # They cannot coexist on the same interface
-    print("[network-config] Stopping hotspot to free wlan0 interface for WiFi client...", flush=True)
-    subprocess.run(
-        ["systemctl", "stop", "hostapd"],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
-    )
-    subprocess.run(
-        ["systemctl", "stop", "dnsmasq"],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
-    )
-    # Bring interface down to reset mode
-    subprocess.run(
-        ["ip", "link", "set", "wlan0", "down"],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
-    )
-    import time
-    time.sleep(2)
-    print("[network-config] Hotspot stopped, wlan0 interface freed", flush=True)
+    # With AP+STA concurrent support, hotspot (wlan0_ap) and WiFi client (wlan0) can run simultaneously
+    # No need to stop hotspot - they use different interfaces
+    print("[network-config] WiFi client will use wlan0, hotspot continues on wlan0_ap", flush=True)
     
-    # CRITICAL: Remove denyinterfaces wlan0 from dhcpcd.conf
-    # This allows dhcpcd to manage wlan0 and get an IP address via DHCP
-    print("[network-config] Enabling dhcpcd management of wlan0 for WiFi client...", flush=True)
+    # CRITICAL: Ensure denyinterfaces wlan0 is NOT in dhcpcd.conf
+    # This allows dhcpcd to manage wlan0 and get an IP address via DHCP for STA mode
+    print("[network-config] Ensuring dhcpcd can manage wlan0 for WiFi client...", flush=True)
     dhcpcd_conf = "/etc/dhcpcd.conf"
     if os.path.exists(dhcpcd_conf):
         with open(dhcpcd_conf, 'r') as f:
             dhcpcd_lines = f.readlines()
         
-        # Remove denyinterfaces wlan0 line
+        # Remove denyinterfaces wlan0 line (if present)
         new_dhcpcd_lines = []
         removed = False
         for line in dhcpcd_lines:

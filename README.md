@@ -253,8 +253,10 @@ sudo systemctl restart stream-player.service
 
 ### WiFi Hotspot
 
-If the system cannot get a network connection via DHCP or if network connectivity is lost, a WiFi hotspot is automatically created:
+The system uses **AP+STA concurrent mode** to support both WiFi client and hotspot simultaneously:
 
+- **Physical Interface (wlan0)**: Used for WiFi client (STA mode) - connects to your WiFi network
+- **Virtual Interface (wlan0_ap)**: Used for hotspot (AP mode) - provides configuration access point
 - **SSID**: `bartix-config-XXXX` (where XXXX is a unique 4-digit ID based on MAC address)
 - **Password**: `bartix-XXXX` (matches the unique ID)
 - **IP Range**: `192.168.4.0/24`
@@ -262,9 +264,9 @@ If the system cannot get a network connection via DHCP or if network connectivit
 - **Transmit Power**: Maximum (20 dBm) for best visibility
 - **Regulatory Domain**: Automatically set (defaults to NL if not configured)
 
-The hotspot is **always active** (even when main network is working) to ensure you can always access the configuration interface.
+The hotspot is **always active** and runs concurrently with WiFi client connections. You can access the configuration interface via the hotspot even when connected to a WiFi network.
 
-**Note**: The unique SSID ensures multiple bartix instances can run nearby without conflicts.
+**Note**: The unique SSID ensures multiple bartix instances can run nearby without conflicts. The virtual AP interface (`wlan0_ap`) is automatically created on boot.
 
 ### Web Configuration Interface
 
@@ -333,8 +335,9 @@ The system automatically:
 | Hotspot not starting | Check logs: `journalctl -u network-manager.service -f`<br>Check hostapd logs: `journalctl -u hostapd -n 50`<br>Verify interface is available: `ip link show wlan0`<br>Check if hostapd is masked: `systemctl status hostapd` |
 | Configuration not applying | Check network-config.py logs and verify file permissions |
 | Can't access web interface | Ensure config-server is running: `sudo systemctl status config-server.service`<br>Check if port 8080 is accessible: `curl http://192.168.4.1:8080` |
-| Can't scan for WiFi networks | When `wlan0` is in AP mode, you cannot scan with it from the same device. Use another device (phone, laptop) to scan, or temporarily stop the hotspot to scan. |
+| Can't scan for WiFi networks | When scanning for WiFi networks, the system temporarily pauses the hotspot. Use another device (phone, laptop) to scan if needed. |
 | Regulatory domain not set | The system automatically sets the regulatory domain. If issues persist:<br>`sudo iw reg set NL` (or your country code)<br>Check current setting: `iw reg get` |
+| Virtual AP interface missing | The virtual interface `wlan0_ap` is created automatically. If missing:<br>`sudo iw phy phy0 interface add wlan0_ap type __ap`<br>Verify: `ip link show wlan0_ap` |
 
 **Diagnostic Commands:**
 

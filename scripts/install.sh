@@ -102,9 +102,10 @@ else
     echo 'DAEMON_CONF="/etc/hostapd/hostapd.conf"' | sudo tee /etc/default/hostapd
 fi
 
-# Update network-manager.service with unique SSID and password
+# Update network-manager.service with unique SSID, password, and interface
 sudo sed -i "s|Environment=HOTSPOT_SSID=.*|Environment=HOTSPOT_SSID=${HOTSPOT_SSID}|" /etc/systemd/system/network-manager.service
 sudo sed -i "s|Environment=HOTSPOT_PASSWORD=.*|Environment=HOTSPOT_PASSWORD=${HOTSPOT_PASSWORD}|" /etc/systemd/system/network-manager.service
+sudo sed -i "s|Environment=HOTSPOT_INTERFACE=.*|Environment=HOTSPOT_INTERFACE=wlan0_ap|" /etc/systemd/system/network-manager.service
 
 # Disable dnsmasq from starting automatically (we'll control it)
 sudo systemctl disable dnsmasq || true
@@ -113,11 +114,35 @@ sudo systemctl stop dnsmasq || true
 # Ensure hostapd is enabled (so it can be started by network-manager)
 sudo systemctl enable hostapd || true
 
-# Disable wpa_supplicant from managing wlan0 (it conflicts with hostapd)
+# Create virtual AP interface for concurrent AP+STA support
+echo "Creating virtual AP interface wlan0_ap..."
+if command -v iw >/dev/null 2>&1 && [ -e /sys/class/net/wlan0 ]; then
+    # Unblock WiFi first
+    sudo rfkill unblock wifi 2>/dev/null || true
+    sleep 1
+    # Create virtual AP interface if it doesn't exist
+    if ! ip link show wlan0_ap >/dev/null 2>&1; then
+        sudo iw phy phy0 interface add wlan0_ap type __ap 2>/dev/null || true
+        sleep 1
+        if ip link show wlan0_ap >/dev/null 2>&1; then
+            echo "Virtual AP interface wlan0_ap created successfully"
+        else
+            echo "Warning: Failed to create virtual AP interface wlan0_ap"
+        fi
+    else
+        echo "Virtual AP interface wlan0_ap already exists"
+    fi
+fi
+
+# Configure dhcpcd to deny managing the virtual AP interface (wlan0_ap)
+# Note: wlan0 should NOT be denied - it's used for STA mode and needs dhcpcd
 if [ -f /etc/dhcpcd.conf ]; then
-    # Add denyinterfaces wlan0 to prevent dhcpcd from managing it
-    if ! grep -q "denyinterfaces wlan0" /etc/dhcpcd.conf; then
-        echo "denyinterfaces wlan0" | sudo tee -a /etc/dhcpcd.conf
+    # Remove old denyinterfaces wlan0 if present (from previous installations)
+    sudo sed -i '/denyinterfaces wlan0$/d' /etc/dhcpcd.conf
+    # Add denyinterfaces wlan0_ap to prevent dhcpcd from managing the virtual AP interface
+    if ! grep -q "denyinterfaces wlan0_ap" /etc/dhcpcd.conf; then
+        echo "denyinterfaces wlan0_ap" | sudo tee -a /etc/dhcpcd.conf
+        echo "Added 'denyinterfaces wlan0_ap' to dhcpcd.conf"
     fi
 fi
 
@@ -225,12 +250,12 @@ fi
 sudo systemctl start network-manager.service
 sleep 5  # Give network-manager more time to initialize and start hotspot
 
-# Verify hotspot is actually broadcasting
-echo "Verifying hotspot is broadcasting..."
+# Verify hotspot is actually broadcasting on wlan0_ap
+echo "Verifying hotspot is broadcasting on wlan0_ap..."
 HOTSPOT_VERIFIED=false
 for i in {1..3}; do
     sleep 2
-    if sudo iw dev wlan0 info 2>/dev/null | grep -q "type AP" && \
+    if sudo iw dev wlan0_ap info 2>/dev/null | grep -q "type AP" && \
        sudo systemctl is-active --quiet hostapd; then
         HOTSPOT_VERIFIED=true
         break
@@ -241,14 +266,14 @@ if [ "$HOTSPOT_VERIFIED" = false ]; then
     echo "Hotspot not broadcasting, restarting hostapd..."
     sudo systemctl restart hostapd
     sleep 3
-    if sudo iw dev wlan0 info 2>/dev/null | grep -q "type AP"; then
+    if sudo iw dev wlan0_ap info 2>/dev/null | grep -q "type AP"; then
         echo "✓ Hotspot verified after restart"
     else
         echo "Warning: Hotspot may not be broadcasting. Check logs:"
         echo "  sudo journalctl -u hostapd -n 50"
     fi
 else
-    echo "✓ Hotspot verified and broadcasting"
+    echo "✓ Hotspot verified and broadcasting on wlan0_ap"
 fi
 
 # Check if network-manager started successfully
