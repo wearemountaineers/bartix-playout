@@ -1,7 +1,7 @@
 [Unit]
 Description=Fixed playout: fetch manifest and play MP3 stream
-Wants=network-online.target sound.target
-After=network-online.target sound.target alsa-restore.service
+Wants=network-online.target sound.target network-manager.service
+After=network-online.target sound.target alsa-restore.service network-manager.service
 StartLimitIntervalSec=0
 
 [Service]

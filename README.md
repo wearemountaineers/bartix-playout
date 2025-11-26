@@ -16,6 +16,9 @@ Ideal for use as a **fixed playout server** (e.g., in retail, broadcast, or sign
 - **Automatic restarts** on failure
 - **Supports HDMI or headphone output**
 - **Uses mpv** for robust buffering and reconnect logic
+- **Network fallback with WiFi hotspot** — automatically creates WiFi hotspot when network is unavailable
+- **Web-based network configuration** — configure WiFi or LAN settings via web interface
+- **Always-available hotspot** — hotspot remains active for remote access even when main network is working
 
 ---
 
@@ -24,7 +27,15 @@ Ideal for use as a **fixed playout server** (e.g., in retail, broadcast, or sign
 | File | Description |
 |------|--------------|
 | `bootstream.py` | Main Python supervisor that fetches manifest, starts player, monitors & restarts |
+| `network-manager.py` | Network connectivity detection and WiFi hotspot management |
+| `config-server.py` | Web server for network configuration interface |
+| `network-config.py` | Utility to apply WiFi/LAN configuration changes |
 | `systemd/stream-player.service` | Systemd service definition for auto-start and recovery |
+| `systemd/network-manager.service` | Systemd service for network management and hotspot |
+| `systemd/config-server.service` | Systemd service for web configuration interface |
+| `config/hostapd.conf` | WiFi hotspot configuration template |
+| `config/dnsmasq-hotspot.conf` | DHCP configuration for hotspot |
+| `templates/config.html` | Web configuration form |
 | `scripts/install.sh` | Installs dependencies, configures service, and enables it |
 | `scripts/test-run.sh` | Simple test script to run manually (without systemd) |
 | `stream.json` | Example JSON manifest file |
@@ -198,6 +209,59 @@ sudo systemctl restart stream-player.service
 
 ---
 
+## 📡 Network Fallback & Configuration
+
+### WiFi Hotspot
+
+If the system cannot get a network connection via DHCP or if network connectivity is lost, a WiFi hotspot is automatically created:
+
+- **SSID**: `bartix-config`
+- **Password**: `bartix-config`
+- **IP Range**: `192.168.4.0/24`
+- **Gateway**: `192.168.4.1`
+
+The hotspot is **always active** (even when main network is working) to ensure you can always access the configuration interface.
+
+### Web Configuration Interface
+
+When connected to the hotspot (or when the system has network), access the web configuration interface:
+
+```
+http://192.168.4.1:8080
+```
+
+The interface allows you to configure:
+
+1. **WiFi Configuration**:
+   - SSID
+   - Password
+
+2. **LAN Static IP Configuration**:
+   - Static IP address
+   - Subnet mask
+   - Gateway
+   - DNS server
+
+After applying configuration, network services will restart automatically.
+
+### Network Detection
+
+The system automatically:
+- Waits up to 30 seconds for network connectivity at boot
+- Detects active IP addresses on all interfaces
+- Tests internet connectivity
+- Starts hotspot if no network is available
+- Monitors network status continuously
+
+### Troubleshooting Network Issues
+
+| Issue | Solution |
+|-------|----------|
+| Can't connect to hotspot | Check WiFi adapter is enabled: `sudo rfkill unblock wifi` |
+| Hotspot not starting | Check logs: `journalctl -u network-manager.service -f` |
+| Configuration not applying | Check network-config.py logs and verify file permissions |
+| Can't access web interface | Ensure config-server is running: `sudo systemctl status config-server.service` |
+
 ## 🧾 License
 
 MIT License  
@@ -211,3 +275,4 @@ See `LICENSE` for full terms.
 - Based on [mpv](https://mpv.io/) media player  
 - Uses standard Raspberry Pi audio stack (ALSA)
 - Built for 24/7 operation in headless setups
+- Network fallback uses `hostapd` and `dnsmasq` for WiFi hotspot

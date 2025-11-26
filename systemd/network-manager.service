@@ -1,0 +1,25 @@
+[Unit]
+Description=Network Manager: Detects connectivity and manages WiFi hotspot
+Wants=network-online.target
+After=network-online.target
+Before=stream-player.service
+
+[Service]
+Type=simple
+# Run as root to manage network interfaces
+User=root
+Environment=NETWORK_WAIT_TIMEOUT=30
+Environment=HOTSPOT_SSID=bartix-config
+Environment=HOTSPOT_PASSWORD=bartix-config
+Environment=HOTSPOT_INTERFACE=wlan0
+Environment=HOTSPOT_IP=192.168.4.1
+ExecStart=/usr/bin/env python3 /usr/local/bin/network-manager.py
+Restart=always
+RestartSec=5
+
+# Resource limits
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target
+

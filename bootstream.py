@@ -28,6 +28,7 @@ MPV_AUDIO_DEVICE = os.environ.get("MPV_AUDIO_DEVICE", "alsa/plughw:CARD=Headphon
 DEFAULT_VOL  = os.environ.get("DEFAULT_VOLUME", "")  # empty = don't touch volume
 REFRESH_SEC  = int(os.environ.get("MANIFEST_REFRESH_SEC", "300"))
 CONNECT_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT_SEC", "6"))
+NETWORK_WAIT_TIMEOUT = int(os.environ.get("NETWORK_WAIT_TIMEOUT", "30"))
 
 # systemd watchdog
 WATCHDOG_USEC = int(os.environ.get("WATCHDOG_USEC", "0"))
@@ -129,6 +130,50 @@ signal.signal(signal.SIGTERM, handle_signal)
 signal.signal(signal.SIGINT, handle_signal)
 
 
+def wait_for_network_with_timeout(timeout=30):
+    """
+    Wait for network connectivity with timeout.
+    Returns (has_ip, has_internet) tuple.
+    """
+    try:
+        # Try to import network-manager functions
+        sys.path.insert(0, os.path.dirname(__file__))
+        try:
+            # Import using importlib to handle hyphenated module name
+            import importlib.util
+            network_manager_path = os.path.join(os.path.dirname(__file__), "network-manager.py")
+            if os.path.exists(network_manager_path):
+                spec = importlib.util.spec_from_file_location("network_manager", network_manager_path)
+                network_manager = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(network_manager)
+                return network_manager.wait_for_network(timeout=timeout, check_internet=False)
+        except ImportError:
+            # Fallback: simple IP check
+            import socket
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                try:
+                    # Try to get hostname (requires network)
+                    socket.gethostbyname("localhost")
+                    # Check for any IP on non-loopback interfaces
+                    import subprocess
+                    result = subprocess.run(
+                        ["ip", "-4", "addr", "show"],
+                        capture_output=True,
+                        text=True,
+                        timeout=2
+                    )
+                    if "inet " in result.stdout and "lo" not in result.stdout:
+                        return (True, False)  # Has IP, internet unknown
+                except Exception:
+                    pass
+                time.sleep(1)
+            return (False, False)
+    except Exception as e:
+        print(f"[bootstream] Network check error: {e}", flush=True)
+        return (False, False)
+
+
 def main():
     global child
 
@@ -137,6 +182,16 @@ def main():
 
     # small grace to let NIC settle
     time.sleep(2)
+
+    # Check for network connectivity before attempting manifest fetch
+    print("[bootstream] Checking network connectivity...", flush=True)
+    has_ip, has_internet = wait_for_network_with_timeout(timeout=NETWORK_WAIT_TIMEOUT)
+    
+    if not has_ip:
+        print("[bootstream] Warning: No network connectivity detected. Hotspot should be available for configuration.", flush=True)
+        print("[bootstream] Continuing anyway - will retry manifest fetch with backoff...", flush=True)
+    else:
+        print(f"[bootstream] Network detected (IP: {has_ip}, Internet: {has_internet})", flush=True)
 
     manifest = fetch_manifest(MANIFEST_URL)
     stream_url = manifest.get("stream_url")
