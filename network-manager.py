@@ -126,15 +126,27 @@ def wait_for_network(timeout=NETWORK_WAIT_TIMEOUT, check_internet=True):
         tuple: (has_ip, has_internet) - status at end of wait
     """
     start_time = time.time()
+    check_count = 0
     while time.time() - start_time < timeout:
         has_ip, has_internet = has_network_connectivity()
+        check_count += 1
+        # Print progress every 5 seconds
+        if check_count % 5 == 0:
+            elapsed = int(time.time() - start_time)
+            print(f"[network-manager] Waiting for network... ({elapsed}s/{timeout}s)", flush=True)
+        
         if has_ip:
             if not check_internet or has_internet:
+                elapsed = int(time.time() - start_time)
+                print(f"[network-manager] Network detected after {elapsed}s", flush=True)
                 return (has_ip, has_internet)
         time.sleep(1)
     
     # Return final status after timeout
-    return has_network_connectivity()
+    elapsed = int(time.time() - start_time)
+    final_status = has_network_connectivity()
+    print(f"[network-manager] Network wait timeout ({elapsed}s). Status: IP={final_status[0]}, Internet={final_status[1]}", flush=True)
+    return final_status
 
 
 def is_hotspot_running():
@@ -414,7 +426,39 @@ def main_loop():
     
     print("[network-manager] Starting network manager...", flush=True)
     
-    # Initial network check
+    # Set WiFi country code if not set (required for AP mode)
+    try:
+        result = subprocess.run(
+            ["iw", "reg", "get"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if "country 99" in result.stdout or "DFS-UNSET" in result.stdout:
+            # Try to get country from wpa_supplicant.conf
+            country_code = "NL"  # default
+            try:
+                if os.path.exists("/etc/wpa_supplicant/wpa_supplicant.conf"):
+                    with open("/etc/wpa_supplicant/wpa_supplicant.conf", "r") as f:
+                        for line in f:
+                            if line.strip().startswith("country="):
+                                country_code = line.split("=")[1].strip().upper()
+                                break
+            except Exception:
+                pass
+            
+            print(f"[network-manager] Setting WiFi country code to {country_code}...", flush=True)
+            subprocess.run(
+                ["iw", "reg", "set", country_code],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+    except Exception as e:
+        print(f"[network-manager] Warning: Could not set country code: {e}", flush=True)
+    
+    # Initial network check (with progress updates)
+    print("[network-manager] Checking network connectivity...", flush=True)
     has_ip, has_internet = wait_for_network(timeout=NETWORK_WAIT_TIMEOUT, check_internet=False)
     
     # Always start hotspot (as per requirement: always available)

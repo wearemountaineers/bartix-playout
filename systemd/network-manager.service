@@ -13,12 +13,18 @@ Environment=HOTSPOT_SSID=bartix-config
 Environment=HOTSPOT_PASSWORD=bartix-config
 Environment=HOTSPOT_INTERFACE=wlan0
 Environment=HOTSPOT_IP=192.168.4.1
+# Don't wait too long for network-online (it may never come)
+TimeoutStartSec=60
 ExecStart=/usr/bin/env python3 /usr/local/bin/network-manager.py
 Restart=always
 RestartSec=5
 
 # Resource limits
 LimitNOFILE=1024
+
+# Ensure we can manage network interfaces
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 
 [Install]
 WantedBy=multi-user.target

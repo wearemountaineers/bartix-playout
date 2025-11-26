@@ -24,7 +24,11 @@ case "$1" in
 esac
 done
 
-[[ -z “$USER_NAME” || -z “$MANIFEST_URL” ]] && { usage; exit 1; }
+if [[ -z "$USER_NAME" || -z "$MANIFEST_URL" ]]; then
+    echo "Error: --user and --manifest are required"
+    usage
+    exit 1
+fi
 
 #Packages
 
@@ -88,29 +92,111 @@ fi
 # Stop wpa_supplicant if running (will be started by network-manager when needed)
 sudo systemctl stop wpa_supplicant || true
 
+# Configure WiFi country code (required for proper AP mode operation)
+echo "Configuring WiFi country code..."
+# Try to detect country from system, default to NL (Netherlands)
+COUNTRY_CODE="${WIFI_COUNTRY:-NL}"
+if [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
+    # Extract country code from existing config if present
+    EXISTING_COUNTRY=$(grep -i "^country=" /etc/wpa_supplicant/wpa_supplicant.conf | cut -d= -f2 | tr -d ' ' || echo "")
+    if [ -n "$EXISTING_COUNTRY" ]; then
+        COUNTRY_CODE="$EXISTING_COUNTRY"
+    fi
+fi
+
+# Set country code via iw (immediate effect)
+sudo iw reg set "$COUNTRY_CODE" 2>/dev/null || true
+
+# Set country code in wpa_supplicant.conf (persistent)
+if [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
+    if ! grep -q "^country=" /etc/wpa_supplicant/wpa_supplicant.conf; then
+        # Add country code at the beginning
+        sudo sed -i "1i country=$COUNTRY_CODE" /etc/wpa_supplicant/wpa_supplicant.conf
+    else
+        sudo sed -i "s/^country=.*/country=$COUNTRY_CODE/i" /etc/wpa_supplicant/wpa_supplicant.conf
+    fi
+else
+    # Create wpa_supplicant.conf with country code
+    sudo mkdir -p /etc/wpa_supplicant
+    echo "country=$COUNTRY_CODE" | sudo tee /etc/wpa_supplicant/wpa_supplicant.conf > /dev/null
+fi
+
+# Configure firewall to allow config server (if ufw is installed)
+if command -v ufw >/dev/null 2>&1; then
+    echo "Configuring firewall..."
+    sudo ufw allow 8080/tcp comment "Bartix config server" 2>/dev/null || true
+fi
+
+# Ensure network-config.py is executable and has correct permissions
+sudo chmod +x /usr/local/bin/network-config.py
+sudo chmod +x /usr/local/bin/config-server.py
+sudo chmod +x /usr/local/bin/network-manager.py
+sudo chmod +x /usr/local/bin/bootstream.py
+
+# Verify all required files exist
+echo "Verifying installation..."
+MISSING_FILES=0
+for file in /usr/local/bin/bootstream.py /usr/local/bin/network-manager.py /usr/local/bin/config-server.py /usr/local/bin/network-config.py \
+            /etc/hostapd/hostapd.conf /etc/dnsmasq.d/hotspot.conf /usr/local/share/bartix/templates/config.html; do
+    if [ ! -f "$file" ]; then
+        echo "ERROR: Missing file: $file"
+        MISSING_FILES=$((MISSING_FILES + 1))
+    fi
+done
+
+if [ $MISSING_FILES -gt 0 ]; then
+    echo "ERROR: $MISSING_FILES required file(s) are missing. Installation incomplete."
+    exit 1
+fi
+
 #Replace service placeholders
 
-sudo sed -i “s#^User=.#User=${USER_NAME}#” /etc/systemd/system/stream-player.service
-sudo sed -i “s#^Environment=STREAM_MANIFEST_URL=.#Environment=STREAM_MANIFEST_URL=${MANIFEST_URL}#” /etc/systemd/system/stream-player.service
-sudo sed -i “s#^Environment=MPV_AUDIO_DEVICE=.*#Environment=MPV_AUDIO_DEVICE=${DEVICE}#” /etc/systemd/system/stream-player.service
+# Replace service placeholders with actual values
+sudo sed -i "s#^User=.*#User=${USER_NAME}#" /etc/systemd/system/stream-player.service
+sudo sed -i "s#^Environment=STREAM_MANIFEST_URL=.*#Environment=STREAM_MANIFEST_URL=${MANIFEST_URL}#" /etc/systemd/system/stream-player.service
+sudo sed -i "s#^Environment=MPV_AUDIO_DEVICE=.*#Environment=MPV_AUDIO_DEVICE=${DEVICE}#" /etc/systemd/system/stream-player.service
 
-#Ensure audio access
+# Ensure audio access
+sudo usermod -aG audio "$USER_NAME" || true
 
-sudo usermod -aG audio “$USER_NAME” || true
-
-#Enable + start
+# Enable + start services
 
 sudo systemctl daemon-reload
+
+# Enable services (but don't start yet - let them start on boot)
 sudo systemctl enable network-manager.service
 sudo systemctl enable config-server.service
 sudo systemctl enable stream-player.service
 
-# Start network-manager first (it will start hotspot if needed)
-sudo systemctl restart network-manager.service
+# Start services with proper ordering
+echo "Starting services..."
+sudo systemctl start network-manager.service
+sleep 3  # Give network-manager time to initialize
+
+# Check if network-manager started successfully
+if ! systemctl is-active --quiet network-manager.service; then
+    echo "Warning: network-manager.service failed to start. Check logs:"
+    echo "  sudo journalctl -u network-manager.service -n 50"
+fi
+
+sudo systemctl start config-server.service
 sleep 2
-sudo systemctl restart config-server.service
+
+# Check if config-server started successfully
+if ! systemctl is-active --quiet config-server.service; then
+    echo "Warning: config-server.service failed to start. Check logs:"
+    echo "  sudo journalctl -u config-server.service -n 50"
+fi
+
+sudo systemctl start stream-player.service
 sleep 2
-sudo systemctl restart stream-player.service
+
+# Check service status
+echo ""
+echo "Service status:"
+systemctl is-active network-manager.service >/dev/null && echo "  ✓ network-manager.service: active" || echo "  ✗ network-manager.service: failed"
+systemctl is-active config-server.service >/dev/null && echo "  ✓ config-server.service: active" || echo "  ✗ config-server.service: failed"
+systemctl is-active stream-player.service >/dev/null && echo "  ✓ stream-player.service: active" || echo "  ✗ stream-player.service: failed"
 
 echo ""
 echo "Installed successfully!"
