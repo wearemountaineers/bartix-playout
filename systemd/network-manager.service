@@ -3,6 +3,8 @@ Description=Network Manager: Detects connectivity and manages WiFi hotspot
 Wants=network-online.target
 After=network-online.target
 Before=stream-player.service
+# Ensure WiFi interface is available
+After=sys-subsystem-net-devices-wlan0.device
 
 [Service]
 Type=simple
@@ -15,6 +17,8 @@ Environment=HOTSPOT_INTERFACE=wlan0
 Environment=HOTSPOT_IP=192.168.4.1
 # Don't wait too long for network-online (it may never come)
 TimeoutStartSec=60
+# Pre-start: Ensure WiFi is unblocked and ready (if interface exists)
+ExecStartPre=/bin/sh -c 'if [ -e /sys/class/net/wlan0 ]; then rfkill unblock wifi || true; sleep 1; iw dev wlan0 set txpower fixed 2000 || true; fi'
 ExecStart=/usr/bin/env python3 /usr/local/bin/network-manager.py
 Restart=always
 RestartSec=5

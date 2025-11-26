@@ -56,6 +56,9 @@ sudo install -m 0644 config/dnsmasq-hotspot.conf /etc/dnsmasq.d/hotspot.conf
 sudo mkdir -p /usr/local/share/bartix/templates
 sudo install -m 0644 templates/config.html /usr/local/share/bartix/templates/config.html
 
+# Create directory for web password file
+sudo mkdir -p /etc/bartix
+
 # Configure hostapd to use our config
 # First, ensure the config file exists (copy it before configuring)
 sudo mkdir -p /etc/hostapd
@@ -203,8 +206,42 @@ sudo systemctl enable stream-player.service
 
 # Start services with proper ordering
 echo "Starting services..."
+
+# Ensure WiFi is unblocked and transmit power is set before starting services
+if [ -e /sys/class/net/wlan0 ]; then
+    sudo rfkill unblock wifi 2>/dev/null || true
+    sleep 1
+    sudo iw dev wlan0 set txpower fixed 2000 2>/dev/null || true
+fi
+
 sudo systemctl start network-manager.service
-sleep 3  # Give network-manager time to initialize
+sleep 5  # Give network-manager more time to initialize and start hotspot
+
+# Verify hotspot is actually broadcasting
+echo "Verifying hotspot is broadcasting..."
+HOTSPOT_VERIFIED=false
+for i in {1..3}; do
+    sleep 2
+    if sudo iw dev wlan0 info 2>/dev/null | grep -q "type AP" && \
+       sudo systemctl is-active --quiet hostapd; then
+        HOTSPOT_VERIFIED=true
+        break
+    fi
+done
+
+if [ "$HOTSPOT_VERIFIED" = false ]; then
+    echo "Hotspot not broadcasting, restarting hostapd..."
+    sudo systemctl restart hostapd
+    sleep 3
+    if sudo iw dev wlan0 info 2>/dev/null | grep -q "type AP"; then
+        echo "✓ Hotspot verified after restart"
+    else
+        echo "Warning: Hotspot may not be broadcasting. Check logs:"
+        echo "  sudo journalctl -u hostapd -n 50"
+    fi
+else
+    echo "✓ Hotspot verified and broadcasting"
+fi
 
 # Check if network-manager started successfully
 if ! systemctl is-active --quiet network-manager.service; then

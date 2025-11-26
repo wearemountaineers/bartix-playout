@@ -25,14 +25,52 @@ NETWORK_CONFIG_SCRIPT = os.environ.get(
     "NETWORK_CONFIG_SCRIPT",
     "/usr/local/bin/network-config.py"
 )
+WEB_PASSWORD_FILE = "/etc/bartix/web_password.txt"
 
 
 class ConfigHandler(http.server.SimpleHTTPRequestHandler):
     """HTTP request handler for configuration server."""
     
+    def check_auth(self):
+        """Check if request is authenticated."""
+        # Check if password file exists
+        if not os.path.exists(WEB_PASSWORD_FILE):
+            return True  # No password set, allow access
+        
+        auth_header = self.headers.get('Authorization', '')
+        if not auth_header.startswith('Basic '):
+            return False
+        
+        import base64
+        try:
+            encoded = auth_header.split(' ', 1)[1]
+            decoded = base64.b64decode(encoded).decode('utf-8')
+            username, password = decoded.split(':', 1)
+            
+            # Read stored password
+            with open(WEB_PASSWORD_FILE, 'r') as f:
+                stored_password = f.read().strip()
+            
+            return password == stored_password
+        except Exception:
+            return False
+    
+    def require_auth(self):
+        """Send 401 authentication required."""
+        self.send_response(401)
+        self.send_header('WWW-Authenticate', 'Basic realm="Bartix Configuration"')
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+        self.wfile.write(b'Authentication required')
+    
     def do_GET(self):
         """Handle GET requests."""
+        # Check authentication (except for login check endpoint)
         parsed_path = urllib.parse.urlparse(self.path)
+        if parsed_path.path != "/check-auth" and not self.check_auth():
+            self.require_auth()
+            return
+        
         query_params = urllib.parse.parse_qs(parsed_path.query)
         
         if parsed_path.path == "/":
@@ -46,12 +84,21 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
         elif parsed_path.path == "/check-manifest":
             url = query_params.get('url', [''])[0]
             self.check_manifest(url)
+        elif parsed_path.path == "/check-auth":
+            # Endpoint to check if password is set
+            has_password = os.path.exists(WEB_PASSWORD_FILE)
+            self.send_json_response(200, {"has_password": has_password})
         else:
             self.send_error(404, "Not Found")
     
     def do_POST(self):
         """Handle POST requests."""
         parsed_path = urllib.parse.urlparse(self.path)
+        
+        # Check authentication (except for set-password endpoint)
+        if parsed_path.path != "/set-password" and not self.check_auth():
+            self.require_auth()
+            return
         
         if parsed_path.path == "/configure":
             self.handle_configure()
@@ -63,6 +110,8 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_reboot()
         elif parsed_path.path == "/update-hotspot":
             self.handle_update_hotspot()
+        elif parsed_path.path == "/set-password":
+            self.handle_set_password()
         else:
             self.send_error(404, "Not Found")
     
@@ -129,7 +178,12 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
                 )
                 for line in result.stdout.splitlines():
                     if "STREAM_MANIFEST_URL=" in line:
-                        manifest_url = line.split("STREAM_MANIFEST_URL=")[1].strip().strip('"')
+                        # Extract just the URL part (before any space or next env var)
+                        env_line = line.split("STREAM_MANIFEST_URL=", 1)[1]
+                        # Take only the URL part (until space or quote)
+                        manifest_url = env_line.split()[0].strip('"').strip("'")
+                        # Remove any trailing environment variable names
+                        manifest_url = manifest_url.split()[0] if manifest_url else ""
                         break
             except Exception:
                 pass
@@ -298,6 +352,16 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
         """Check if manifest URL is accessible."""
         if not url:
             self.send_json_response(400, {"error": "URL is required"})
+            return
+        
+        # Clean up URL - remove any extra whitespace or environment variables
+        url = url.strip()
+        # Remove any trailing environment variable names (they might be appended)
+        url = url.split()[0] if url else ""
+        
+        # Basic URL validation
+        if not url.startswith(('http://', 'https://')):
+            self.send_json_response(400, {"error": "URL must start with http:// or https://"})
             return
         
         try:
@@ -492,6 +556,40 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
             })
         except Exception as e:
             print(f"[config-server] Error updating hotspot: {e}", flush=True)
+            self.send_json_response(500, {"error": str(e)})
+    
+    def handle_set_password(self):
+        """Handle web interface password setting."""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode('utf-8'))
+            
+            password = data.get('password', '').strip()
+            
+            if not password:
+                self.send_json_response(400, {"error": "Password is required"})
+                return
+            
+            if len(password) < 4:
+                self.send_json_response(400, {"error": "Password must be at least 4 characters"})
+                return
+            
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(WEB_PASSWORD_FILE), exist_ok=True)
+            
+            # Store password (in production, should be hashed, but for simplicity we'll store plaintext)
+            with open(WEB_PASSWORD_FILE, 'w') as f:
+                f.write(password)
+            
+            # Set restrictive permissions
+            os.chmod(WEB_PASSWORD_FILE, 0o600)
+            
+            self.send_json_response(200, {
+                "message": "Password set successfully. Please refresh the page and log in."
+            })
+        except Exception as e:
+            print(f"[config-server] Error setting password: {e}", flush=True)
             self.send_json_response(500, {"error": str(e)})
     
     def handle_reboot(self):

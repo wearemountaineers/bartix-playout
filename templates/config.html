@@ -222,9 +222,43 @@
         .inline-group button {
             width: auto;
         }
+        .login-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.7);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .login-overlay.active {
+            display: flex;
+        }
+        .login-box {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            max-width: 400px;
+            width: 90%;
+        }
     </style>
 </head>
 <body>
+    <div id="login-overlay" class="login-overlay">
+        <div class="login-box">
+            <h2 style="margin-bottom: 20px;">Login Required</h2>
+            <div class="form-group">
+                <label for="login_password">Password</label>
+                <input type="password" id="login_password" placeholder="Enter password" style="width: 100%;">
+            </div>
+            <button onclick="doLogin()" style="width: 100%; margin-top: 10px;">Login</button>
+            <div id="login-status" class="status" style="display: none; margin-top: 15px;"></div>
+        </div>
+    </div>
+    
     <div class="container">
         <h1>Bartix Configuration</h1>
         <p class="subtitle">Manage network, services, and system settings</p>
@@ -362,6 +396,14 @@
                 <p style="margin-bottom: 20px; color: #666;">Warning: These actions will affect the system immediately.</p>
             </div>
             <div class="form-group">
+                <label for="web_password">Web Interface Password</label>
+                <input type="password" id="web_password" placeholder="Enter new password (min 4 characters)">
+                <small style="color: #666; font-size: 12px;">Set a password to protect the web interface. Leave empty to disable password.</small>
+            </div>
+            <div class="form-group">
+                <button onclick="setWebPassword()">Update Web Password</button>
+            </div>
+            <div class="form-group" style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee;">
                 <button class="danger" onclick="rebootSystem()">Reboot System</button>
             </div>
             <div id="system-status" class="status" style="display: none;"></div>
@@ -451,11 +493,14 @@
         
         // Manifest functions
         async function checkManifest() {
-            const url = document.getElementById('manifest_url').value;
+            let url = document.getElementById('manifest_url').value.trim();
             if (!url) {
                 showStatus('manifest-status', 'Please enter a URL', 'error');
                 return;
             }
+            
+            // Clean up URL - remove any trailing whitespace or environment variables
+            url = url.split()[0]; // Take only first part (before any spaces)
             
             showStatus('manifest-status', 'Checking manifest...', 'info');
             
@@ -555,6 +600,41 @@
         }
         
         // System functions
+        async function setWebPassword() {
+            const password = document.getElementById('web_password').value;
+            
+            if (!password) {
+                showStatus('system-status', 'Please enter a password', 'error');
+                return;
+            }
+            
+            if (password.length < 4) {
+                showStatus('system-status', 'Password must be at least 4 characters', 'error');
+                return;
+            }
+            
+            showStatus('system-status', 'Setting password...', 'info');
+            
+            try {
+                const response = await fetch('/set-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: password })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showStatus('system-status', '✓ Password set successfully. Please refresh and log in.', 'success');
+                    document.getElementById('web_password').value = '';
+                } else {
+                    showStatus('system-status', '✗ ' + (result.error || 'Failed to set password'), 'error');
+                }
+            } catch (error) {
+                showStatus('system-status', 'Error: ' + error.message, 'error');
+            }
+        }
+        
         async function rebootSystem() {
             if (!confirm('Are you sure you want to reboot the system? This will disconnect you.')) {
                 return;
@@ -624,22 +704,103 @@
             }
         }
         
+        // Authentication
+        let authHeader = null;
+        
+        async function checkAuth() {
+            try {
+                const response = await fetch('/check-auth');
+                const data = await response.json();
+                if (data.has_password && !authHeader) {
+                    document.getElementById('login-overlay').classList.add('active');
+                    document.getElementById('login_password').focus();
+                } else {
+                    loadInitialData();
+                }
+            } catch (error) {
+                console.error('Auth check failed:', error);
+                loadInitialData();
+            }
+        }
+        
+        async function doLogin() {
+            const password = document.getElementById('login_password').value;
+            if (!password) {
+                showStatus('login-status', 'Please enter password', 'error');
+                return;
+            }
+            
+            authHeader = 'Basic ' + btoa('admin:' + password);
+            
+            try {
+                const response = await fetch('/status', {
+                    headers: { 'Authorization': authHeader }
+                });
+                
+                if (response.status === 401) {
+                    showStatus('login-status', 'Invalid password', 'error');
+                    document.getElementById('login_password').value = '';
+                } else {
+                    document.getElementById('login-overlay').classList.remove('active');
+                    // Override fetch to include auth
+                    const originalFetch = window.fetch;
+                    window.fetch = function(...args) {
+                        if (args[1]) {
+                            args[1].headers = args[1].headers || {};
+                            args[1].headers['Authorization'] = authHeader;
+                        } else {
+                            args[1] = { headers: { 'Authorization': authHeader } };
+                        }
+                        return originalFetch.apply(this, args);
+                    };
+                    loadInitialData();
+                }
+            } catch (error) {
+                showStatus('login-status', 'Login failed: ' + error.message, 'error');
+            }
+        }
+        
+        // Allow Enter key to submit login
+        document.addEventListener('DOMContentLoaded', () => {
+            const loginPassword = document.getElementById('login_password');
+            if (loginPassword) {
+                loginPassword.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        doLogin();
+                    }
+                });
+            }
+            checkAuth();
+        });
+        
         // Load initial data
-        fetch('/status')
-            .then(r => r.json())
-            .then(data => {
-                if (data.manifest_url) {
-                    document.getElementById('manifest_url').value = data.manifest_url;
-                }
-                if (data.volume !== undefined) {
-                    document.getElementById('volume_slider').value = data.volume;
-                    updateVolumeDisplay(data.volume);
-                }
-                if (data.hotspot_ssid) {
-                    document.getElementById('hotspot_ssid').value = data.hotspot_ssid;
-                }
-            })
-            .catch(() => {});
+        function loadInitialData() {
+            const headers = authHeader ? { 'Authorization': authHeader } : {};
+            fetch('/status', { headers: headers })
+                .then(r => {
+                    if (r.status === 401) {
+                        checkAuth();
+                        return null;
+                    }
+                    return r.json();
+                })
+                .then(data => {
+                    if (!data) return;
+                    if (data.manifest_url) {
+                        // Clean up manifest URL - take only the URL part (before any spaces)
+                        let url = data.manifest_url.trim().split()[0];
+                        document.getElementById('manifest_url').value = url;
+                    }
+                    if (data.volume !== undefined) {
+                        document.getElementById('volume_slider').value = data.volume;
+                        updateVolumeDisplay(data.volume);
+                    }
+                    if (data.hotspot_ssid) {
+                        document.getElementById('hotspot_ssid').value = data.hotspot_ssid;
+                    }
+                })
+                .catch(() => {});
+        }
     </script>
 </body>
 </html>

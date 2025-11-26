@@ -158,20 +158,51 @@ def is_hotspot_running():
             check=False
         )
         if result.returncode == 0:
-            return True
-        
-        # Also check if interface is in AP mode
+            # Also verify interface is actually in AP mode
+            result = subprocess.run(
+                ["iw", "dev", HOTSPOT_INTERFACE, "info"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if "type AP" in result.stdout:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def verify_hotspot_broadcasting():
+    """Verify that hotspot is actually broadcasting (not just running)."""
+    try:
+        # Check if interface is up and in AP mode
         result = subprocess.run(
             ["iw", "dev", HOTSPOT_INTERFACE, "info"],
             capture_output=True,
             text=True,
             check=False
         )
-        if "type AP" in result.stdout:
-            return True
+        if result.returncode != 0 or "type AP" not in result.stdout:
+            return False
+        
+        # Check if interface is UP
+        result = subprocess.run(
+            ["ip", "link", "show", HOTSPOT_INTERFACE],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if "state UP" not in result.stdout:
+            return False
+        
+        # Check if hostapd service is active
+        result = subprocess.run(
+            ["systemctl", "is-active", "--quiet", HOSTAPD_SERVICE],
+            check=False
+        )
+        return result.returncode == 0
     except Exception:
-        pass
-    return False
+        return False
 
 
 def stop_hotspot():
@@ -351,14 +382,29 @@ def start_hotspot():
                 print(f"[network-manager] hostapd logs:\n{journal_result.stdout}", flush=True)
             return False
         
-        time.sleep(2)
+        time.sleep(3)  # Give hostapd more time to initialize
         
-        if is_hotspot_running():
-            print(f"[network-manager] Hotspot '{HOTSPOT_SSID}' started on {HOTSPOT_INTERFACE}", flush=True)
+        # Verify hotspot is actually broadcasting
+        if verify_hotspot_broadcasting():
+            print(f"[network-manager] Hotspot '{HOTSPOT_SSID}' started and broadcasting on {HOTSPOT_INTERFACE}", flush=True)
             return True
         else:
-            print(f"[network-manager] Failed to start hotspot - service started but interface not in AP mode", flush=True)
-            return False
+            print(f"[network-manager] Warning: hostapd started but hotspot not broadcasting. Attempting restart...", flush=True)
+            # Try restarting hostapd once
+            subprocess.run(
+                ["systemctl", "restart", HOSTAPD_SERVICE],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            time.sleep(3)
+            
+            if verify_hotspot_broadcasting():
+                print(f"[network-manager] Hotspot '{HOTSPOT_SSID}' started after restart", flush=True)
+                return True
+            else:
+                print(f"[network-manager] Failed to start hotspot - service started but not broadcasting", flush=True)
+                return False
     except Exception as e:
         print(f"[network-manager] Error starting hotspot: {e}", flush=True)
         import traceback
@@ -473,9 +519,21 @@ def main_loop():
     # Always start hotspot (as per requirement: always available)
     if not is_hotspot_running():
         if ensure_hotspot_config():
-            start_hotspot()
+            if not start_hotspot():
+                print("[network-manager] Failed to start hotspot initially, will retry in monitor loop", flush=True)
         else:
             print("[network-manager] Warning: Hotspot config files not found. Run install script.", flush=True)
+    else:
+        # Verify hotspot is actually broadcasting even if service says it's running
+        if not verify_hotspot_broadcasting():
+            print("[network-manager] Hotspot service running but not broadcasting, restarting...", flush=True)
+            subprocess.run(
+                ["systemctl", "restart", HOSTAPD_SERVICE],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            time.sleep(3)
     
     # Monitor loop
     last_check = time.time()
@@ -487,10 +545,22 @@ def main_loop():
             if now - last_check >= check_interval:
                 has_ip, has_internet = has_network_connectivity()
                 
-                # Ensure hotspot is running (always available requirement)
-                if not is_hotspot_running():
-                    if ensure_hotspot_config():
-                        start_hotspot()
+                # Ensure hotspot is running and broadcasting (always available requirement)
+                if not is_hotspot_running() or not verify_hotspot_broadcasting():
+                    if not is_hotspot_running():
+                        # Start if not running
+                        if ensure_hotspot_config():
+                            start_hotspot()
+                    else:
+                        # Service is running but not broadcasting - restart it
+                        print("[network-manager] Hotspot service running but not broadcasting, restarting...", flush=True)
+                        subprocess.run(
+                            ["systemctl", "restart", HOSTAPD_SERVICE],
+                            check=False,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL
+                        )
+                        time.sleep(2)
                 
                 last_check = now
             
