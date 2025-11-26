@@ -307,6 +307,10 @@
                     </div>
                     <div id="wifi-test-status" class="status" style="display: none; margin-top: 10px; font-size: 12px;"></div>
                 </div>
+                <div class="form-group" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #eee;">
+                    <button type="button" class="danger small" onclick="clearWiFiCredentials()">Clear WiFi Credentials</button>
+                    <small style="color: #666; font-size: 12px; display: block; margin-top: 5px;">Remove saved WiFi credentials to retry configuration. System will fall back to hotspot mode.</small>
+                </div>
             </div>
                 
                 <div id="lan-config" class="network-config">
@@ -514,6 +518,35 @@
             } catch (error) {
                 statusEl.className = 'status error';
                 statusEl.textContent = 'Error: ' + error.message;
+            }
+        }
+        
+        async function clearWiFiCredentials() {
+            if (!confirm('Are you sure you want to clear WiFi credentials? The system will disconnect from WiFi and fall back to hotspot mode.')) {
+                return;
+            }
+            
+            showStatus('status', 'Clearing WiFi credentials...', 'info');
+            
+            try {
+                const headers = authHeader ? { 'Authorization': authHeader } : {};
+                const response = await fetch('/clear-wifi', {
+                    method: 'POST',
+                    headers: headers
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showStatus('status', '✓ WiFi credentials cleared. System will fall back to hotspot mode.', 'success');
+                    // Clear the form fields
+                    document.getElementById('wifi_ssid').value = '';
+                    document.getElementById('wifi_password').value = '';
+                } else {
+                    showStatus('status', '✗ ' + (result.error || 'Failed to clear WiFi credentials'), 'error');
+                }
+            } catch (error) {
+                showStatus('status', 'Error: ' + error.message, 'error');
             }
         }
         

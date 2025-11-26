@@ -164,6 +164,54 @@ def configure_wifi(ssid, password=None):
     return True
 
 
+def clear_wifi():
+    """
+    Clear WiFi credentials by removing all network blocks from wpa_supplicant.conf.
+    This allows the system to fall back to hotspot mode.
+    """
+    print(f"[network-config] Clearing WiFi credentials...", flush=True)
+    
+    # Backup existing config
+    backup_file(WPA_SUPPLICANT_CONF)
+    
+    # Read existing config
+    if not os.path.exists(WPA_SUPPLICANT_CONF):
+        print(f"[network-config] No WiFi configuration found to clear", flush=True)
+        return True
+    
+    with open(WPA_SUPPLICANT_CONF, 'r') as f:
+        config_lines = f.readlines()
+    
+    # Remove all network blocks
+    new_lines = []
+    in_network = False
+    brace_count = 0
+    
+    for line in config_lines:
+        stripped = line.strip()
+        if stripped.startswith("network={"):
+            in_network = True
+            brace_count = stripped.count("{") - stripped.count("}")
+            continue  # Skip the network={ line
+        elif in_network:
+            brace_count += line.count("{") - line.count("}")
+            if brace_count == 0:
+                # End of network block
+                in_network = False
+            continue  # Skip all lines inside network block
+        
+        # Keep all non-network lines (country, ctrl_interface, etc.)
+        new_lines.append(line)
+    
+    # Write updated config (without network blocks)
+    os.makedirs(os.path.dirname(WPA_SUPPLICANT_CONF), exist_ok=True)
+    with open(WPA_SUPPLICANT_CONF, 'w') as f:
+        f.writelines(new_lines)
+    
+    print(f"[network-config] WiFi credentials cleared", flush=True)
+    return True
+
+
 def configure_lan_static(ip, subnet, gateway, dns="8.8.8.8", interface="eth0"):
     """
     Configure static IP for LAN interface by updating dhcpcd.conf.
@@ -272,12 +320,14 @@ def restart_network_services():
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Configure network settings")
-    parser.add_argument("--network-type", choices=["wifi", "lan"], required=True,
+    parser.add_argument("--network-type", choices=["wifi", "lan"], required=False,
                        help="Network type: wifi or lan")
     
     # WiFi arguments
     parser.add_argument("--ssid", help="WiFi SSID")
     parser.add_argument("--password", help="WiFi password")
+    parser.add_argument("--clear-wifi", action="store_true",
+                       help="Clear WiFi credentials (remove all network blocks)")
     
     # LAN arguments
     parser.add_argument("--ip", help="Static IP address")
@@ -289,22 +339,34 @@ def main():
     args = parser.parse_args()
     
     try:
-        if args.network_type == "wifi":
+        if args.clear_wifi:
+            # Clear WiFi credentials
+            clear_wifi()
+            # Restart network services to apply
+            restart_network_services()
+            print("[network-config] WiFi credentials cleared successfully", flush=True)
+            sys.exit(0)
+        elif args.network_type == "wifi":
             if not args.ssid:
                 print("[network-config] Error: --ssid is required for WiFi", flush=True)
                 sys.exit(1)
             configure_wifi(args.ssid, args.password)
+            # Restart network services
+            restart_network_services()
+            print("[network-config] Configuration applied successfully", flush=True)
+            sys.exit(0)
         elif args.network_type == "lan":
             if not all([args.ip, args.subnet, args.gateway]):
                 print("[network-config] Error: --ip, --subnet, and --gateway are required for LAN", flush=True)
                 sys.exit(1)
             configure_lan_static(args.ip, args.subnet, args.gateway, args.dns, args.interface)
-        
-        # Restart network services
-        restart_network_services()
-        
-        print("[network-config] Configuration applied successfully", flush=True)
-        sys.exit(0)
+            # Restart network services
+            restart_network_services()
+            print("[network-config] Configuration applied successfully", flush=True)
+            sys.exit(0)
+        else:
+            print("[network-config] Error: --network-type or --clear-wifi is required", flush=True)
+            sys.exit(1)
     
     except Exception as e:
         print(f"[network-config] Error: {e}", flush=True)

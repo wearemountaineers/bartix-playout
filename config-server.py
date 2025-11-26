@@ -88,6 +88,8 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
             self.check_manifest(url)
         elif parsed_path.path == "/scan-wifi":
             self.scan_wifi_networks()
+        elif parsed_path.path == "/clear-wifi":
+            self.clear_wifi_credentials()
         elif parsed_path.path == "/test-wifi":
             ssid = query_params.get('ssid', [''])[0]
             password = query_params.get('password', [''])[0]
@@ -120,6 +122,8 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_update_hotspot()
         elif parsed_path.path == "/set-password":
             self.handle_set_password()
+        elif parsed_path.path == "/clear-wifi":
+            self.clear_wifi_credentials()
         else:
             self.send_error(404, "Not Found")
     
@@ -865,6 +869,49 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json_response(500, {"error": "Connection test timeout"})
         except Exception as e:
             print(f"[config-server] Error testing WiFi: {e}", flush=True)
+            self.send_json_response(500, {"error": str(e)})
+    
+    def clear_wifi_credentials(self):
+        """Clear WiFi credentials by removing network blocks from wpa_supplicant.conf."""
+        try:
+            # Call network-config.py to clear WiFi
+            if not os.path.exists(NETWORK_CONFIG_SCRIPT):
+                # Try local path
+                local_script = os.path.join(os.path.dirname(__file__), "network-config.py")
+                if os.path.exists(local_script):
+                    script_path = local_script
+                else:
+                    self.send_json_response(500, {"error": "Network configuration script not found"})
+                    return
+            else:
+                script_path = NETWORK_CONFIG_SCRIPT
+            
+            # Build command to clear WiFi
+            cmd = ["python3", script_path, "--clear-wifi"]
+            
+            # Run configuration script
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0:
+                print(f"[config-server] WiFi credentials cleared successfully", flush=True)
+                self.send_json_response(200, {
+                    "message": "WiFi credentials cleared successfully. System will fall back to hotspot mode."
+                })
+            else:
+                error_msg = result.stderr or result.stdout or "Unknown error"
+                print(f"[config-server] Error clearing WiFi credentials: {error_msg}", flush=True)
+                self.send_json_response(500, {"error": f"Failed to clear WiFi credentials: {error_msg}"})
+        
+        except subprocess.TimeoutExpired:
+            print(f"[config-server] Timeout clearing WiFi credentials", flush=True)
+            self.send_json_response(500, {"error": "Timeout while clearing WiFi credentials"})
+        except Exception as e:
+            print(f"[config-server] Error clearing WiFi credentials: {e}", flush=True)
             self.send_json_response(500, {"error": str(e)})
     
     def handle_set_password(self):
