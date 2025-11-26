@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bartix Network Configuration</title>
+    <title>Bartix Configuration</title>
     <style>
         * {
             margin: 0;
@@ -16,16 +16,17 @@
             min-height: 100vh;
             display: flex;
             justify-content: center;
-            align-items: center;
+            align-items: flex-start;
             padding: 20px;
         }
         .container {
             background: white;
             border-radius: 10px;
             box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-            max-width: 500px;
+            max-width: 800px;
             width: 100%;
             padding: 30px;
+            margin-bottom: 20px;
         }
         h1 {
             color: #333;
@@ -36,6 +37,37 @@
             color: #666;
             margin-bottom: 30px;
             font-size: 14px;
+        }
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #eee;
+        }
+        .tab {
+            padding: 10px 20px;
+            cursor: pointer;
+            border: none;
+            background: none;
+            color: #666;
+            font-size: 14px;
+            font-weight: 500;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+            transition: all 0.3s;
+        }
+        .tab:hover {
+            color: #667eea;
+        }
+        .tab.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
         }
         .form-group {
             margin-bottom: 20px;
@@ -49,17 +81,26 @@
         }
         input[type="text"],
         input[type="password"],
-        select {
+        input[type="number"],
+        select,
+        textarea {
             width: 100%;
             padding: 10px;
             border: 1px solid #ddd;
             border-radius: 5px;
             font-size: 14px;
             transition: border-color 0.3s;
+            font-family: inherit;
         }
-        input:focus, select:focus {
+        input:focus, select:focus, textarea:focus {
             outline: none;
             border-color: #667eea;
+        }
+        textarea {
+            resize: vertical;
+            min-height: 200px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
         }
         .network-type-group {
             display: flex;
@@ -97,8 +138,7 @@
             display: block;
         }
         button {
-            width: 100%;
-            padding: 12px;
+            padding: 12px 24px;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             border: none;
@@ -107,6 +147,7 @@
             font-weight: 600;
             cursor: pointer;
             transition: transform 0.2s, box-shadow 0.2s;
+            width: 100%;
         }
         button:hover {
             transform: translateY(-2px);
@@ -114,6 +155,17 @@
         }
         button:active {
             transform: translateY(0);
+        }
+        button.secondary {
+            background: #6c757d;
+        }
+        button.danger {
+            background: #dc3545;
+        }
+        button.small {
+            padding: 8px 16px;
+            font-size: 14px;
+            width: auto;
         }
         .status {
             margin-top: 20px;
@@ -139,72 +191,194 @@
             border: 1px solid #bee5eb;
             display: block;
         }
+        .service-selector {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .service-selector button {
+            flex: 1;
+        }
+        .volume-control {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .volume-slider {
+            flex: 1;
+        }
+        .volume-value {
+            min-width: 50px;
+            text-align: center;
+            font-weight: 600;
+        }
+        .inline-group {
+            display: flex;
+            gap: 10px;
+        }
+        .inline-group input {
+            flex: 1;
+        }
+        .inline-group button {
+            width: auto;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Bartix Network Configuration</h1>
-        <p class="subtitle">Configure WiFi or LAN network settings</p>
+        <h1>Bartix Configuration</h1>
+        <p class="subtitle">Manage network, services, and system settings</p>
         
-        <form id="configForm">
+        <div class="tabs">
+            <button class="tab active" data-tab="network">Network</button>
+            <button class="tab" data-tab="manifest">Manifest</button>
+            <button class="tab" data-tab="volume">Volume</button>
+            <button class="tab" data-tab="logs">Logs</button>
+            <button class="tab" data-tab="system">System</button>
+        </div>
+        
+        <!-- Network Configuration Tab -->
+        <div id="network-tab" class="tab-content active">
+            <form id="configForm">
+                <div class="form-group">
+                    <label>Network Type</label>
+                    <div class="network-type-group">
+                        <div class="network-type-option">
+                            <input type="radio" id="wifi" name="network_type" value="wifi" checked>
+                            <label for="wifi">WiFi</label>
+                        </div>
+                        <div class="network-type-option">
+                            <input type="radio" id="lan" name="network_type" value="lan">
+                            <label for="lan">LAN (Static IP)</label>
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="wifi-config" class="network-config active">
+                    <div class="form-group">
+                        <label for="wifi_ssid">WiFi SSID</label>
+                        <input type="text" id="wifi_ssid" name="wifi_ssid" placeholder="Enter WiFi network name" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="wifi_password">WiFi Password</label>
+                        <input type="password" id="wifi_password" name="wifi_password" placeholder="Enter WiFi password">
+                    </div>
+                </div>
+                
+                <div id="lan-config" class="network-config">
+                    <div class="form-group">
+                        <label for="lan_ip">Static IP Address</label>
+                        <input type="text" id="lan_ip" name="lan_ip" placeholder="192.168.1.100" pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$">
+                    </div>
+                    <div class="form-group">
+                        <label for="lan_subnet">Subnet Mask</label>
+                        <input type="text" id="lan_subnet" name="lan_subnet" placeholder="255.255.255.0" pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$">
+                    </div>
+                    <div class="form-group">
+                        <label for="lan_gateway">Gateway</label>
+                        <input type="text" id="lan_gateway" name="lan_gateway" placeholder="192.168.1.1" pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$">
+                    </div>
+                    <div class="form-group">
+                        <label for="lan_dns">DNS Server</label>
+                        <input type="text" id="lan_dns" name="lan_dns" placeholder="8.8.8.8" pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$">
+                    </div>
+                </div>
+                
+                <button type="submit">Apply Network Configuration</button>
+            </form>
+        </div>
+        
+        <!-- Manifest Configuration Tab -->
+        <div id="manifest-tab" class="tab-content">
             <div class="form-group">
-                <label>Network Type</label>
-                <div class="network-type-group">
-                    <div class="network-type-option">
-                        <input type="radio" id="wifi" name="network_type" value="wifi" checked>
-                        <label for="wifi">WiFi</label>
-                    </div>
-                    <div class="network-type-option">
-                        <input type="radio" id="lan" name="network_type" value="lan">
-                        <label for="lan">LAN (Static IP)</label>
-                    </div>
+                <label for="manifest_url">Manifest URL</label>
+                <div class="inline-group">
+                    <input type="text" id="manifest_url" placeholder="https://example.com/stream.json">
+                    <button class="small" onclick="checkManifest()">Check</button>
                 </div>
             </div>
-            
-            <div id="wifi-config" class="network-config active">
-                <div class="form-group">
-                    <label for="wifi_ssid">WiFi SSID</label>
-                    <input type="text" id="wifi_ssid" name="wifi_ssid" placeholder="Enter WiFi network name" required>
-                </div>
-                <div class="form-group">
-                    <label for="wifi_password">WiFi Password</label>
-                    <input type="password" id="wifi_password" name="wifi_password" placeholder="Enter WiFi password">
+            <div class="form-group">
+                <button onclick="updateManifest()">Update Manifest URL</button>
+            </div>
+            <div id="manifest-status" class="status" style="display: none;"></div>
+        </div>
+        
+        <!-- Volume Control Tab -->
+        <div id="volume-tab" class="tab-content">
+            <div class="form-group">
+                <label>Volume Control</label>
+                <div class="volume-control">
+                    <input type="range" id="volume_slider" class="volume-slider" min="0" max="100" value="50" oninput="updateVolumeDisplay(this.value)">
+                    <span id="volume_value" class="volume-value">50%</span>
                 </div>
             </div>
-            
-            <div id="lan-config" class="network-config">
-                <div class="form-group">
-                    <label for="lan_ip">Static IP Address</label>
-                    <input type="text" id="lan_ip" name="lan_ip" placeholder="192.168.1.100" pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$">
-                </div>
-                <div class="form-group">
-                    <label for="lan_subnet">Subnet Mask</label>
-                    <input type="text" id="lan_subnet" name="lan_subnet" placeholder="255.255.255.0" pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$">
-                </div>
-                <div class="form-group">
-                    <label for="lan_gateway">Gateway</label>
-                    <input type="text" id="lan_gateway" name="lan_gateway" placeholder="192.168.1.1" pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$">
-                </div>
-                <div class="form-group">
-                    <label for="lan_dns">DNS Server</label>
-                    <input type="text" id="lan_dns" name="lan_dns" placeholder="8.8.8.8" pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$">
+            <div class="form-group">
+                <button onclick="setVolume()">Set Volume</button>
+            </div>
+            <div id="volume-status" class="status" style="display: none;"></div>
+        </div>
+        
+        <!-- Logs Tab -->
+        <div id="logs-tab" class="tab-content">
+            <div class="form-group">
+                <label>Service Logs</label>
+                <div class="service-selector">
+                    <button class="small" onclick="loadLogs('network-manager')">Network Manager</button>
+                    <button class="small" onclick="loadLogs('config-server')">Config Server</button>
+                    <button class="small" onclick="loadLogs('stream-player')">Stream Player</button>
                 </div>
             </div>
-            
-            <button type="submit">Apply Configuration</button>
-        </form>
+            <div class="form-group">
+                <textarea id="logs_content" readonly></textarea>
+            </div>
+            <div class="form-group">
+                <button class="small secondary" onclick="refreshLogs()">Refresh</button>
+            </div>
+        </div>
+        
+        <!-- System Tab -->
+        <div id="system-tab" class="tab-content">
+            <div class="form-group">
+                <h3>System Actions</h3>
+                <p style="margin-bottom: 20px; color: #666;">Warning: These actions will affect the system immediately.</p>
+            </div>
+            <div class="form-group">
+                <button class="danger" onclick="rebootSystem()">Reboot System</button>
+            </div>
+            <div id="system-status" class="status" style="display: none;"></div>
+        </div>
         
         <div id="status" class="status"></div>
     </div>
     
     <script>
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                const tabName = tab.dataset.tab;
+                
+                // Update tabs
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                
+                // Update content
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                document.getElementById(tabName + '-tab').classList.add('active');
+                
+                // Load logs if switching to logs tab
+                if (tabName === 'logs' && !document.getElementById('logs_content').value) {
+                    loadLogs('network-manager');
+                }
+            });
+        });
+        
+        // Network configuration form
         const form = document.getElementById('configForm');
         const wifiConfig = document.getElementById('wifi-config');
         const lanConfig = document.getElementById('lan-config');
         const statusDiv = document.getElementById('status');
         const networkTypeRadios = document.querySelectorAll('input[name="network_type"]');
         
-        // Show/hide config sections based on network type
         networkTypeRadios.forEach(radio => {
             radio.addEventListener('change', () => {
                 if (radio.value === 'wifi') {
@@ -232,13 +406,12 @@
             
             statusDiv.className = 'status info';
             statusDiv.textContent = 'Applying configuration...';
+            statusDiv.style.display = 'block';
             
             try {
                 const response = await fetch('/configure', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(data)
                 });
                 
@@ -246,7 +419,7 @@
                 
                 if (response.ok) {
                     statusDiv.className = 'status success';
-                    statusDiv.textContent = result.message || 'Configuration applied successfully! The system will restart network services.';
+                    statusDiv.textContent = result.message || 'Configuration applied successfully!';
                 } else {
                     statusDiv.className = 'status error';
                     statusDiv.textContent = result.error || 'Failed to apply configuration';
@@ -257,17 +430,158 @@
             }
         });
         
-        // Load current status on page load
+        // Manifest functions
+        async function checkManifest() {
+            const url = document.getElementById('manifest_url').value;
+            if (!url) {
+                showStatus('manifest-status', 'Please enter a URL', 'error');
+                return;
+            }
+            
+            showStatus('manifest-status', 'Checking manifest...', 'info');
+            
+            try {
+                const response = await fetch(`/check-manifest?url=${encodeURIComponent(url)}`);
+                const result = await response.json();
+                
+                if (response.ok && result.accessible) {
+                    showStatus('manifest-status', `✓ Manifest is accessible. Stream URL: ${result.stream_url || 'N/A'}`, 'success');
+                } else {
+                    showStatus('manifest-status', `✗ ${result.error || 'Manifest is not accessible'}`, 'error');
+                }
+            } catch (error) {
+                showStatus('manifest-status', 'Error: ' + error.message, 'error');
+            }
+        }
+        
+        async function updateManifest() {
+            const url = document.getElementById('manifest_url').value;
+            if (!url) {
+                showStatus('manifest-status', 'Please enter a URL', 'error');
+                return;
+            }
+            
+            showStatus('manifest-status', 'Updating manifest URL...', 'info');
+            
+            try {
+                const response = await fetch('/update-manifest', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: url })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showStatus('manifest-status', '✓ Manifest URL updated successfully. Service will restart.', 'success');
+                } else {
+                    showStatus('manifest-status', '✗ ' + (result.error || 'Failed to update'), 'error');
+                }
+            } catch (error) {
+                showStatus('manifest-status', 'Error: ' + error.message, 'error');
+            }
+        }
+        
+        // Volume functions
+        function updateVolumeDisplay(value) {
+            document.getElementById('volume_value').textContent = value + '%';
+        }
+        
+        async function setVolume() {
+            const volume = document.getElementById('volume_slider').value;
+            showStatus('volume-status', 'Setting volume...', 'info');
+            
+            try {
+                const response = await fetch('/set-volume', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ volume: parseInt(volume) })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showStatus('volume-status', `✓ Volume set to ${volume}%`, 'success');
+                } else {
+                    showStatus('volume-status', '✗ ' + (result.error || 'Failed to set volume'), 'error');
+                }
+            } catch (error) {
+                showStatus('volume-status', 'Error: ' + error.message, 'error');
+            }
+        }
+        
+        // Logs functions
+        let currentService = 'network-manager';
+        
+        async function loadLogs(service) {
+            currentService = service;
+            document.getElementById('logs_content').value = 'Loading logs...';
+            
+            try {
+                const response = await fetch(`/logs?service=${service}&lines=100`);
+                const result = await response.json();
+                
+                if (response.ok) {
+                    document.getElementById('logs_content').value = result.logs || 'No logs available';
+                } else {
+                    document.getElementById('logs_content').value = 'Error: ' + (result.error || 'Failed to load logs');
+                }
+            } catch (error) {
+                document.getElementById('logs_content').value = 'Error: ' + error.message;
+            }
+        }
+        
+        function refreshLogs() {
+            loadLogs(currentService);
+        }
+        
+        // System functions
+        async function rebootSystem() {
+            if (!confirm('Are you sure you want to reboot the system? This will disconnect you.')) {
+                return;
+            }
+            
+            showStatus('system-status', 'Rebooting system...', 'info');
+            
+            try {
+                const response = await fetch('/reboot', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showStatus('system-status', '✓ System reboot initiated. You will be disconnected.', 'success');
+                } else {
+                    showStatus('system-status', '✗ ' + (result.error || 'Failed to reboot'), 'error');
+                }
+            } catch (error) {
+                showStatus('system-status', 'Error: ' + error.message, 'error');
+            }
+        }
+        
+        // Helper function
+        function showStatus(id, message, type) {
+            const statusEl = document.getElementById(id);
+            statusEl.className = `status ${type}`;
+            statusEl.textContent = message;
+            statusEl.style.display = 'block';
+        }
+        
+        // Load initial data
         fetch('/status')
             .then(r => r.json())
             .then(data => {
-                if (data.network_type) {
-                    document.querySelector(`input[value="${data.network_type}"]`).checked = true;
-                    document.querySelector(`input[value="${data.network_type}"]`).dispatchEvent(new Event('change'));
+                if (data.manifest_url) {
+                    document.getElementById('manifest_url').value = data.manifest_url;
+                }
+                if (data.volume !== undefined) {
+                    document.getElementById('volume_slider').value = data.volume;
+                    updateVolumeDisplay(data.volume);
                 }
             })
             .catch(() => {});
     </script>
 </body>
 </html>
-

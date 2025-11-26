@@ -127,6 +127,18 @@ if command -v ufw >/dev/null 2>&1; then
     sudo ufw allow 8080/tcp comment "Bartix config server" 2>/dev/null || true
 fi
 
+# Set maximum WiFi transmit power for hotspot visibility
+# This ensures the hotspot is visible even if country code isn't fully set
+echo "Configuring WiFi transmit power..."
+if command -v iw >/dev/null 2>&1 && [ -e /sys/class/net/wlan0 ]; then
+    # Unblock WiFi first
+    sudo rfkill unblock wifi 2>/dev/null || true
+    sleep 1
+    # Set maximum transmit power (20 dBm = 2000 mW)
+    sudo iw dev wlan0 set txpower fixed 2000 2>/dev/null || true
+    echo "WiFi transmit power set to maximum (20 dBm)"
+fi
+
 # Ensure network-config.py is executable and has correct permissions
 sudo chmod +x /usr/local/bin/network-config.py
 sudo chmod +x /usr/local/bin/config-server.py

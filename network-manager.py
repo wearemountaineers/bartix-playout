@@ -304,6 +304,15 @@ def start_hotspot():
             print(f"[network-manager] Error bringing interface up: {result.stderr}", flush=True)
             return False
         
+        # Set maximum transmit power (20 dBm = 2000 mW) for better visibility
+        print(f"[network-manager] Setting maximum transmit power...", flush=True)
+        subprocess.run(
+            ["iw", "dev", HOTSPOT_INTERFACE, "set", "txpower", "fixed", "2000"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        
         time.sleep(2)
         
         # Start dnsmasq

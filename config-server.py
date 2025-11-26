@@ -9,7 +9,10 @@ import json
 import http.server
 import socketserver
 import urllib.parse
+import urllib.request
+import urllib.error
 import subprocess
+import re
 from pathlib import Path
 
 # Configuration
@@ -30,11 +33,19 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         """Handle GET requests."""
         parsed_path = urllib.parse.urlparse(self.path)
+        query_params = urllib.parse.parse_qs(parsed_path.query)
         
         if parsed_path.path == "/":
             self.serve_config_form()
         elif parsed_path.path == "/status":
             self.serve_status()
+        elif parsed_path.path == "/logs":
+            service = query_params.get('service', ['network-manager'])[0]
+            lines = int(query_params.get('lines', ['100'])[0])
+            self.serve_logs(service, lines)
+        elif parsed_path.path == "/check-manifest":
+            url = query_params.get('url', [''])[0]
+            self.check_manifest(url)
         else:
             self.send_error(404, "Not Found")
     
@@ -44,6 +55,12 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
         
         if parsed_path.path == "/configure":
             self.handle_configure()
+        elif parsed_path.path == "/update-manifest":
+            self.handle_update_manifest()
+        elif parsed_path.path == "/set-volume":
+            self.handle_set_volume()
+        elif parsed_path.path == "/reboot":
+            self.handle_reboot()
         else:
             self.send_error(404, "Not Found")
     
@@ -99,11 +116,49 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
                 has_internet = False
                 hotspot_running = False
             
+            # Get manifest URL from stream-player service
+            manifest_url = ""
+            try:
+                result = subprocess.run(
+                    ["systemctl", "show", "stream-player.service", "--property=Environment"],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                for line in result.stdout.splitlines():
+                    if "STREAM_MANIFEST_URL=" in line:
+                        manifest_url = line.split("STREAM_MANIFEST_URL=")[1].strip().strip('"')
+                        break
+            except Exception:
+                pass
+            
+            # Get current volume (try to read from amixer)
+            volume = None
+            try:
+                result = subprocess.run(
+                    ["amixer", "get", "PCM"],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                # Parse volume from amixer output
+                for line in result.stdout.splitlines():
+                    if "%" in line and "[" in line:
+                        import re
+                        match = re.search(r'\[(\d+)%\]', line)
+                        if match:
+                            volume = int(match.group(1))
+                            break
+            except Exception:
+                pass
+            
             status = {
                 "has_ip": has_ip,
                 "has_internet": has_internet,
                 "hotspot_running": hotspot_running,
-                "network_type": "unknown"  # Could be enhanced to detect actual type
+                "network_type": "unknown",
+                "manifest_url": manifest_url,
+                "volume": volume
             }
             
             self.send_response(200)
@@ -198,6 +253,164 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json_response(400, {"error": "Invalid JSON"})
         except Exception as e:
             print(f"[config-server] Error handling configure: {e}", flush=True)
+            self.send_json_response(500, {"error": str(e)})
+    
+    def serve_logs(self, service, lines=100):
+        """Serve service logs."""
+        try:
+            valid_services = ['network-manager', 'config-server', 'stream-player']
+            if service not in valid_services:
+                self.send_json_response(400, {"error": f"Invalid service. Must be one of: {', '.join(valid_services)}"})
+                return
+            
+            result = subprocess.run(
+                ["journalctl", "-u", f"{service}.service", "-n", str(lines), "--no-pager"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode == 0:
+                self.send_json_response(200, {"logs": result.stdout})
+            else:
+                self.send_json_response(500, {"error": result.stderr or "Failed to get logs"})
+        except subprocess.TimeoutExpired:
+            self.send_json_response(500, {"error": "Timeout getting logs"})
+        except Exception as e:
+            print(f"[config-server] Error getting logs: {e}", flush=True)
+            self.send_json_response(500, {"error": str(e)})
+    
+    def check_manifest(self, url):
+        """Check if manifest URL is accessible."""
+        if not url:
+            self.send_json_response(400, {"error": "URL is required"})
+            return
+        
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "bartix-config/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                stream_url = data.get('stream_url', '')
+                self.send_json_response(200, {
+                    "accessible": True,
+                    "stream_url": stream_url
+                })
+        except urllib.error.HTTPError as e:
+            self.send_json_response(200, {
+                "accessible": False,
+                "error": f"HTTP {e.code}: {e.reason}"
+            })
+        except urllib.error.URLError as e:
+            self.send_json_response(200, {
+                "accessible": False,
+                "error": f"URL Error: {str(e)}"
+            })
+        except json.JSONDecodeError:
+            self.send_json_response(200, {
+                "accessible": False,
+                "error": "Response is not valid JSON"
+            })
+        except Exception as e:
+            self.send_json_response(200, {
+                "accessible": False,
+                "error": str(e)
+            })
+    
+    def handle_update_manifest(self):
+        """Handle manifest URL update."""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode('utf-8'))
+            
+            url = data.get('url')
+            if not url:
+                self.send_json_response(400, {"error": "URL is required"})
+                return
+            
+            # Update systemd service environment variable
+            service_file = "/etc/systemd/system/stream-player.service"
+            if not os.path.exists(service_file):
+                self.send_json_response(500, {"error": "Service file not found"})
+                return
+            
+            # Read current service file
+            with open(service_file, 'r') as f:
+                content = f.read()
+            
+            # Update STREAM_MANIFEST_URL
+            pattern = r'Environment=STREAM_MANIFEST_URL=.*'
+            replacement = f'Environment=STREAM_MANIFEST_URL={url}'
+            
+            if re.search(pattern, content):
+                content = re.sub(pattern, replacement, content)
+            else:
+                # Add it if it doesn't exist
+                content = content.replace(
+                    '[Service]',
+                    f'[Service]\n{replacement}'
+                )
+            
+            # Write back
+            with open(service_file, 'w') as f:
+                f.write(content)
+            
+            # Reload systemd and restart service
+            subprocess.run(["systemctl", "daemon-reload"], check=True)
+            subprocess.run(["systemctl", "restart", "stream-player.service"], check=False)
+            
+            self.send_json_response(200, {
+                "message": "Manifest URL updated successfully. Service restarted."
+            })
+        except Exception as e:
+            print(f"[config-server] Error updating manifest: {e}", flush=True)
+            self.send_json_response(500, {"error": str(e)})
+    
+    def handle_set_volume(self):
+        """Handle volume setting."""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode('utf-8'))
+            
+            volume = data.get('volume')
+            if volume is None:
+                self.send_json_response(400, {"error": "Volume is required"})
+                return
+            
+            volume = max(0, min(100, int(volume)))
+            
+            # Set volume using amixer
+            for ctl in ("PCM", "Headphone", "Speaker"):
+                result = subprocess.run(
+                    ["amixer", "set", ctl, f"{volume}%"],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+            
+            self.send_json_response(200, {
+                "message": f"Volume set to {volume}%"
+            })
+        except Exception as e:
+            print(f"[config-server] Error setting volume: {e}", flush=True)
+            self.send_json_response(500, {"error": str(e)})
+    
+    def handle_reboot(self):
+        """Handle system reboot."""
+        try:
+            # Use systemctl reboot (safer than direct reboot command)
+            subprocess.Popen(
+                ["systemctl", "reboot"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            
+            self.send_json_response(200, {
+                "message": "System reboot initiated"
+            })
+        except Exception as e:
+            print(f"[config-server] Error rebooting: {e}", flush=True)
             self.send_json_response(500, {"error": str(e)})
     
     def send_json_response(self, status_code, data):
