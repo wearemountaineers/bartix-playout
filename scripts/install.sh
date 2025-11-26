@@ -146,8 +146,22 @@ if [ -f /etc/dhcpcd.conf ]; then
     fi
 fi
 
-# Stop wpa_supplicant if running (will be started by network-manager when needed)
+# Configure wpa_supplicant to use wlan0 only (not wlan0_ap)
+# Create systemd override to force wpa_supplicant to use wlan0
+echo "Configuring wpa_supplicant to use wlan0 only..."
+sudo mkdir -p /etc/systemd/system/wpa_supplicant.service.d
+sudo tee /etc/systemd/system/wpa_supplicant.service.d/override.conf > /dev/null <<EOF
+[Service]
+# Force wpa_supplicant to use wlan0 only (not wlan0_ap)
+# This is critical for AP+STA concurrent operation
+ExecStart=
+ExecStart=/sbin/wpa_supplicant -u -s -O /run/wpa_supplicant -i wlan0 -c /etc/wpa_supplicant/wpa_supplicant.conf
+EOF
+echo "Created wpa_supplicant systemd override to use wlan0 only"
+
+# Stop wpa_supplicant if running (will be started when WiFi is configured)
 sudo systemctl stop wpa_supplicant || true
+sudo systemctl daemon-reload
 
 # Configure WiFi country code (required for proper AP mode operation)
 echo "Configuring WiFi country code..."

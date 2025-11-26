@@ -67,6 +67,11 @@ sudo rm -f /etc/hostapd/hostapd.conf
 sudo rm -f /etc/dnsmasq.d/hotspot.conf
 sudo rm -rf /usr/local/share/bartix
 
+# Remove wpa_supplicant systemd override
+echo "Removing wpa_supplicant systemd override..."
+sudo rm -rf /etc/systemd/system/wpa_supplicant.service.d
+sudo systemctl daemon-reload
+
 # Clean up network configuration
 echo "Cleaning up network configuration..."
 if [ -f /etc/dhcpcd.conf ]; then

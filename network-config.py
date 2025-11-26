@@ -470,6 +470,26 @@ def restart_network_services():
         # Continue anyway - dhcpcd might not be installed or might be managed differently
     
     try:
+        # Ensure wpa_supplicant systemd override exists to use wlan0 only
+        override_dir = "/etc/systemd/system/wpa_supplicant.service.d"
+        override_file = f"{override_dir}/override.conf"
+        if not os.path.exists(override_file):
+            print("[network-config] Creating wpa_supplicant systemd override to use wlan0 only...", flush=True)
+            os.makedirs(override_dir, exist_ok=True)
+            with open(override_file, 'w') as f:
+                f.write("[Service]\n")
+                f.write("# Force wpa_supplicant to use wlan0 only (not wlan0_ap)\n")
+                f.write("# This is critical for AP+STA concurrent operation\n")
+                f.write("ExecStart=\n")
+                f.write("ExecStart=/sbin/wpa_supplicant -u -s -O /run/wpa_supplicant -i wlan0 -c /etc/wpa_supplicant/wpa_supplicant.conf\n")
+            subprocess.run(
+                ["systemctl", "daemon-reload"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            print("[network-config] wpa_supplicant override created", flush=True)
+        
         # Restart wpa_supplicant AFTER dhcpcd
         print("[network-config] Restarting wpa_supplicant...", flush=True)
         result = subprocess.run(
