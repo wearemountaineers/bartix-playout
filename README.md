@@ -262,6 +262,38 @@ The system automatically:
 | Configuration not applying | Check network-config.py logs and verify file permissions |
 | Can't access web interface | Ensure config-server is running: `sudo systemctl status config-server.service` |
 
+## 🗑️ Uninstallation
+
+To remove the bartix playout system from your Raspberry Pi:
+
+```bash
+sudo bash scripts/uninstall.sh
+```
+
+This will:
+- Stop and disable all services
+- Remove all installed scripts and configuration files
+- Clean up network configuration
+- Restore normal network operation
+
+**Options:**
+- `--remove-packages`: Also remove installed packages (hostapd, dnsmasq, etc.)
+- `--remove-user-from-audio <username>`: Remove user from audio group
+
+**Examples:**
+```bash
+# Basic uninstall
+sudo bash scripts/uninstall.sh
+
+# Uninstall and remove packages
+sudo bash scripts/uninstall.sh --remove-packages
+
+# Uninstall and remove user from audio group
+sudo bash scripts/uninstall.sh --remove-user-from-audio admin
+```
+
+---
+
 ## 🧾 License
 
 MIT License  
