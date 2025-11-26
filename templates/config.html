@@ -289,16 +289,25 @@
                     </div>
                 </div>
                 
-                <div id="wifi-config" class="network-config active">
-                    <div class="form-group">
-                        <label for="wifi_ssid">WiFi SSID</label>
-                        <input type="text" id="wifi_ssid" name="wifi_ssid" placeholder="Enter WiFi network name" required>
+            <div id="wifi-config" class="network-config active">
+                <div class="form-group">
+                    <label for="wifi_ssid">WiFi SSID</label>
+                    <div class="inline-group">
+                        <input type="text" id="wifi_ssid" name="wifi_ssid" placeholder="Enter WiFi network name" required list="wifi-networks">
+                        <button type="button" class="small" onclick="scanWiFiNetworks()">Scan</button>
                     </div>
-                    <div class="form-group">
-                        <label for="wifi_password">WiFi Password</label>
-                        <input type="password" id="wifi_password" name="wifi_password" placeholder="Enter WiFi password">
-                    </div>
+                    <datalist id="wifi-networks"></datalist>
+                    <div id="wifi-scan-status" class="status" style="display: none; margin-top: 10px; font-size: 12px;"></div>
                 </div>
+                <div class="form-group">
+                    <label for="wifi_password">WiFi Password</label>
+                    <div class="inline-group">
+                        <input type="password" id="wifi_password" name="wifi_password" placeholder="Enter WiFi password">
+                        <button type="button" class="small" onclick="testWiFiConnection()">Test Connection</button>
+                    </div>
+                    <div id="wifi-test-status" class="status" style="display: none; margin-top: 10px; font-size: 12px;"></div>
+                </div>
+            </div>
                 
                 <div id="lan-config" class="network-config">
                     <div class="form-group">
@@ -439,6 +448,74 @@
         const lanConfig = document.getElementById('lan-config');
         const statusDiv = document.getElementById('status');
         const networkTypeRadios = document.querySelectorAll('input[name="network_type"]');
+        
+        // WiFi scanning and testing
+        async function scanWiFiNetworks() {
+            const statusEl = document.getElementById('wifi-scan-status');
+            const datalist = document.getElementById('wifi-networks');
+            
+            statusEl.className = 'status info';
+            statusEl.textContent = 'Scanning for WiFi networks...';
+            statusEl.style.display = 'block';
+            datalist.innerHTML = '';
+            
+            try {
+                const headers = authHeader ? { 'Authorization': authHeader } : {};
+                const response = await fetch('/scan-wifi', { headers: headers });
+                const result = await response.json();
+                
+                if (response.ok && result.networks) {
+                    result.networks.forEach(network => {
+                        const option = document.createElement('option');
+                        option.value = network.ssid || '';
+                        if (network.signal) {
+                            option.textContent = `${network.ssid} (${network.signal} dBm)`;
+                        }
+                        datalist.appendChild(option);
+                    });
+                    statusEl.className = 'status success';
+                    statusEl.textContent = `✓ Found ${result.networks.length} networks`;
+                } else {
+                    statusEl.className = 'status error';
+                    statusEl.textContent = '✗ ' + (result.error || 'Failed to scan networks');
+                }
+            } catch (error) {
+                statusEl.className = 'status error';
+                statusEl.textContent = 'Error: ' + error.message;
+            }
+        }
+        
+        async function testWiFiConnection() {
+            const ssid = document.getElementById('wifi_ssid').value.trim();
+            const password = document.getElementById('wifi_password').value;
+            const statusEl = document.getElementById('wifi-test-status');
+            
+            if (!ssid) {
+                showStatus('wifi-test-status', 'Please enter an SSID first', 'error');
+                return;
+            }
+            
+            statusEl.className = 'status info';
+            statusEl.textContent = 'Testing connection...';
+            statusEl.style.display = 'block';
+            
+            try {
+                const headers = authHeader ? { 'Authorization': authHeader } : {};
+                const response = await fetch(`/test-wifi?ssid=${encodeURIComponent(ssid)}&password=${encodeURIComponent(password)}`, { headers: headers });
+                const result = await response.json();
+                
+                if (result.success) {
+                    statusEl.className = 'status success';
+                    statusEl.textContent = '✓ Connection successful!';
+                } else {
+                    statusEl.className = 'status error';
+                    statusEl.textContent = '✗ ' + (result.error || 'Connection failed');
+                }
+            } catch (error) {
+                statusEl.className = 'status error';
+                statusEl.textContent = 'Error: ' + error.message;
+            }
+        }
         
         networkTypeRadios.forEach(radio => {
             radio.addEventListener('change', () => {

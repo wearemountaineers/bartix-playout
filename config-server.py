@@ -13,6 +13,8 @@ import urllib.request
 import urllib.error
 import subprocess
 import re
+import time
+import tempfile
 from pathlib import Path
 
 # Configuration
@@ -84,6 +86,12 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
         elif parsed_path.path == "/check-manifest":
             url = query_params.get('url', [''])[0]
             self.check_manifest(url)
+        elif parsed_path.path == "/scan-wifi":
+            self.scan_wifi_networks()
+        elif parsed_path.path == "/test-wifi":
+            ssid = query_params.get('ssid', [''])[0]
+            password = query_params.get('password', [''])[0]
+            self.test_wifi_connection(ssid, password)
         elif parsed_path.path == "/check-auth":
             # Endpoint to check if password is set
             has_password = os.path.exists(WEB_PASSWORD_FILE)
@@ -556,6 +564,307 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
             })
         except Exception as e:
             print(f"[config-server] Error updating hotspot: {e}", flush=True)
+            self.send_json_response(500, {"error": str(e)})
+    
+    def scan_wifi_networks(self):
+        """Scan for available WiFi networks."""
+        try:
+            # Temporarily stop hostapd if running (needed to scan)
+            hostapd_running = False
+            try:
+                result = subprocess.run(
+                    ["systemctl", "is-active", "--quiet", "hostapd"],
+                    check=False
+                )
+                if result.returncode == 0:
+                    hostapd_running = True
+                    print("[config-server] Stopping hostapd temporarily for scan...", flush=True)
+                    subprocess.run(
+                        ["systemctl", "stop", "hostapd"],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    time.sleep(2)
+            except Exception:
+                pass
+            
+            # Unblock WiFi
+            subprocess.run(
+                ["rfkill", "unblock", "wifi"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            time.sleep(1)
+            
+            # Bring interface up if down
+            subprocess.run(
+                ["ip", "link", "set", "wlan0", "up"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            time.sleep(1)
+            
+            # Scan for networks using iw (preferred)
+            result = subprocess.run(
+                ["iw", "dev", "wlan0", "scan"],
+                capture_output=True,
+                text=True,
+                timeout=20
+            )
+            
+            networks = []
+            scan_success = False
+            
+            if result.returncode == 0:
+                # Parse iw scan output
+                current_network = {}
+                for line in result.stdout.splitlines():
+                    line = line.strip()
+                    if line.startswith("BSS "):
+                        if current_network and "ssid" in current_network:
+                            networks.append(current_network)
+                        current_network = {}
+                    elif "SSID: " in line:
+                        ssid = line.split("SSID: ", 1)[1].strip()
+                        if ssid:
+                            current_network["ssid"] = ssid
+                    elif "signal: " in line:
+                        try:
+                            signal_str = line.split("signal: ", 1)[1].strip().split()[0]
+                            current_network["signal"] = int(float(signal_str))
+                        except:
+                            pass
+                    elif "freq: " in line:
+                        freq = line.split("freq: ", 1)[1].strip().split()[0]
+                        current_network["frequency"] = freq
+                
+                if current_network and "ssid" in current_network:
+                    networks.append(current_network)
+                scan_success = True
+            
+            # Try iwlist if iw failed or found no networks
+            if not scan_success or not networks:
+                result = subprocess.run(
+                    ["iwlist", "wlan0", "scan"],
+                    capture_output=True,
+                    text=True,
+                    timeout=20
+                )
+                
+                if result.returncode == 0:
+                    current_network = {}
+                    for line in result.stdout.splitlines():
+                        line = line.strip()
+                        if "Cell " in line and "Address:" in line:
+                            if current_network and "ssid" in current_network:
+                                networks.append(current_network)
+                            current_network = {}
+                        elif "ESSID:" in line:
+                            ssid = line.split("ESSID:", 1)[1].strip().strip('"')
+                            if ssid:
+                                current_network["ssid"] = ssid
+                        elif "Signal level=" in line:
+                            try:
+                                signal_str = line.split("Signal level=", 1)[1].strip().split()[0]
+                                # iwlist uses negative dBm, convert if needed
+                                signal = int(signal_str)
+                                if signal > 0:  # If positive, it's probably in different format
+                                    signal = -signal
+                                current_network["signal"] = signal
+                            except:
+                                pass
+                    
+                    if current_network and "ssid" in current_network:
+                        networks.append(current_network)
+                    scan_success = True
+            
+            # Restart hostapd if it was running
+            if hostapd_running:
+                time.sleep(1)
+                print("[config-server] Restarting hostapd after scan...", flush=True)
+                subprocess.run(
+                    ["systemctl", "start", "hostapd"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            
+            if scan_success:
+                # Remove duplicates and sort by signal strength
+                seen = set()
+                unique_networks = []
+                for net in networks:
+                    ssid = net.get("ssid", "")
+                    if ssid and ssid not in seen and ssid != "":
+                        seen.add(ssid)
+                        unique_networks.append(net)
+                
+                # Sort by signal strength (higher is better)
+                unique_networks.sort(key=lambda x: x.get("signal", -100), reverse=True)
+                
+                self.send_json_response(200, {"networks": unique_networks})
+            else:
+                self.send_json_response(500, {
+                    "error": f"Failed to scan: {result.stderr or 'Unknown error'}"
+                })
+        except subprocess.TimeoutExpired:
+            self.send_json_response(500, {"error": "Scan timeout"})
+        except Exception as e:
+            print(f"[config-server] Error scanning WiFi: {e}", flush=True)
+            import traceback
+            print(f"[config-server] Traceback: {traceback.format_exc()}", flush=True)
+            self.send_json_response(500, {"error": str(e)})
+    
+    def test_wifi_connection(self, ssid, password):
+        """Test WiFi connection without applying configuration."""
+        if not ssid:
+            self.send_json_response(400, {"error": "SSID is required"})
+            return
+        
+        try:
+            # Temporarily stop hostapd if running
+            hostapd_running = False
+            try:
+                result = subprocess.run(
+                    ["systemctl", "is-active", "--quiet", "hostapd"],
+                    check=False
+                )
+                if result.returncode == 0:
+                    hostapd_running = True
+                    subprocess.run(
+                        ["systemctl", "stop", "hostapd"],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    time.sleep(2)
+            except Exception:
+                pass
+            
+            # Create temporary wpa_supplicant config
+            import tempfile
+            temp_conf = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.conf')
+            temp_conf.write("country=NL\n")
+            temp_conf.write("ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev\n")
+            temp_conf.write("update_config=1\n\n")
+            temp_conf.write("network={\n")
+            temp_conf.write(f'    ssid="{ssid}"\n')
+            if password:
+                temp_conf.write(f'    psk="{password}"\n')
+            else:
+                temp_conf.write("    key_mgmt=NONE\n")
+            temp_conf.write("}\n")
+            temp_conf.close()
+            
+            # Stop existing wpa_supplicant
+            subprocess.run(
+                ["systemctl", "stop", "wpa_supplicant"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            time.sleep(1)
+            
+            # Unblock WiFi
+            subprocess.run(
+                ["rfkill", "unblock", "wifi"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            
+            # Bring interface down and up
+            subprocess.run(
+                ["ip", "link", "set", "wlan0", "down"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            time.sleep(1)
+            subprocess.run(
+                ["ip", "link", "set", "wlan0", "up"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            time.sleep(2)
+            
+            # Start wpa_supplicant with temp config
+            result = subprocess.run(
+                ["wpa_supplicant", "-B", "-i", "wlan0", "-c", temp_conf.name, "-f", "/tmp/wpa_test.log"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            # Wait and check connection
+            time.sleep(5)
+            
+            # Check if we got an IP
+            result = subprocess.run(
+                ["ip", "addr", "show", "wlan0"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            
+            has_ip = "inet " in result.stdout and "127.0.0.1" not in result.stdout
+            
+            # Kill test wpa_supplicant
+            subprocess.run(
+                ["pkill", "-f", f"wpa_supplicant.*{temp_conf.name}"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            
+            # Clean up temp file
+            try:
+                os.unlink(temp_conf.name)
+                os.unlink("/tmp/wpa_test.log")
+            except:
+                pass
+            
+            # Restart hostapd if it was running
+            if hostapd_running:
+                time.sleep(1)
+                subprocess.run(
+                    ["systemctl", "start", "hostapd"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            
+            if has_ip:
+                self.send_json_response(200, {
+                    "success": True,
+                    "message": "Successfully connected to WiFi network"
+                })
+            else:
+                # Check log for errors
+                error_msg = "Failed to connect"
+                try:
+                    if os.path.exists("/tmp/wpa_test.log"):
+                        with open("/tmp/wpa_test.log", "r") as f:
+                            log_content = f.read()
+                            if "4-Way Handshake failed" in log_content:
+                                error_msg = "Incorrect password"
+                            elif "auth_failures" in log_content:
+                                error_msg = "Authentication failed"
+                except:
+                    pass
+                
+                self.send_json_response(200, {
+                    "success": False,
+                    "error": error_msg
+                })
+        except subprocess.TimeoutExpired:
+            self.send_json_response(500, {"error": "Connection test timeout"})
+        except Exception as e:
+            print(f"[config-server] Error testing WiFi: {e}", flush=True)
             self.send_json_response(500, {"error": str(e)})
     
     def handle_set_password(self):
