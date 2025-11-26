@@ -17,8 +17,9 @@ Ideal for use as a **fixed playout server** (e.g., in retail, broadcast, or sign
 - **Supports HDMI or headphone output**
 - **Uses mpv** for robust buffering and reconnect logic
 - **Network fallback with WiFi hotspot** — automatically creates WiFi hotspot when network is unavailable
+- **AP+STA concurrent support** — hotspot and WiFi client can run simultaneously using virtual AP interface
 - **Web-based network configuration** — configure WiFi or LAN settings via web interface
-- **Always-available hotspot** — hotspot remains active for remote access even when main network is working
+- **Always-available hotspot** — hotspot remains active for remote access even when connected to WiFi network
 
 ---
 
