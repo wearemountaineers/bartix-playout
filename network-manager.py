@@ -391,6 +391,38 @@ def start_hotspot():
         )
         time.sleep(1)
         
+        # CRITICAL: Add denyinterfaces wlan0 to dhcpcd.conf
+        # This prevents dhcpcd from managing wlan0 (we set static IP for hotspot)
+        print(f"[network-manager] Preventing dhcpcd from managing {HOTSPOT_INTERFACE}...", flush=True)
+        dhcpcd_conf = "/etc/dhcpcd.conf"
+        if os.path.exists(dhcpcd_conf):
+            with open(dhcpcd_conf, 'r') as f:
+                dhcpcd_lines = f.readlines()
+            
+            # Check if denyinterfaces wlan0 already exists
+            has_deny = False
+            for line in dhcpcd_lines:
+                if "denyinterfaces wlan0" in line.strip():
+                    has_deny = True
+                    break
+            
+            if not has_deny:
+                # Add denyinterfaces wlan0
+                with open(dhcpcd_conf, 'a') as f:
+                    f.write("denyinterfaces wlan0\n")
+                print(f"[network-manager] Added 'denyinterfaces wlan0' to dhcpcd.conf", flush=True)
+                
+                # Restart dhcpcd to apply the change
+                subprocess.run(
+                    ["systemctl", "restart", "dhcpcd"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                time.sleep(1)
+            else:
+                print(f"[network-manager] 'denyinterfaces wlan0' already in dhcpcd.conf", flush=True)
+        
         # Unmask hostapd if it's masked (required before starting)
         subprocess.run(
             ["systemctl", "unmask", HOSTAPD_SERVICE],

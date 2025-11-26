@@ -82,6 +82,32 @@ def configure_wifi(ssid, password=None):
     time.sleep(2)
     print("[network-config] Hotspot stopped, wlan0 interface freed", flush=True)
     
+    # CRITICAL: Remove denyinterfaces wlan0 from dhcpcd.conf
+    # This allows dhcpcd to manage wlan0 and get an IP address via DHCP
+    print("[network-config] Enabling dhcpcd management of wlan0 for WiFi client...", flush=True)
+    dhcpcd_conf = "/etc/dhcpcd.conf"
+    if os.path.exists(dhcpcd_conf):
+        with open(dhcpcd_conf, 'r') as f:
+            dhcpcd_lines = f.readlines()
+        
+        # Remove denyinterfaces wlan0 line
+        new_dhcpcd_lines = []
+        removed = False
+        for line in dhcpcd_lines:
+            if "denyinterfaces wlan0" not in line.strip():
+                new_dhcpcd_lines.append(line)
+            else:
+                removed = True
+        
+        if removed:
+            with open(dhcpcd_conf, 'w') as f:
+                f.writelines(new_dhcpcd_lines)
+            print("[network-config] Removed 'denyinterfaces wlan0' from dhcpcd.conf", flush=True)
+        else:
+            print("[network-config] 'denyinterfaces wlan0' not found in dhcpcd.conf (already removed)", flush=True)
+    else:
+        print("[network-config] Warning: /etc/dhcpcd.conf not found", flush=True)
+    
     # Backup existing config
     backup_file(WPA_SUPPLICANT_CONF)
     
@@ -205,8 +231,11 @@ def restart_network_services():
     """Restart network services to apply configuration."""
     print("[network-config] Restarting network services...", flush=True)
     
+    import time
+    
     try:
-        # Restart dhcpcd (handles both DHCP and static IP)
+        # Restart dhcpcd FIRST (handles both DHCP and static IP)
+        # This is critical for WiFi client to get an IP address
         subprocess.run(
             ["systemctl", "restart", "dhcpcd"],
             check=True,
@@ -214,12 +243,13 @@ def restart_network_services():
             stderr=subprocess.PIPE
         )
         print("[network-config] dhcpcd restarted", flush=True)
+        time.sleep(2)  # Give dhcpcd time to start
     except subprocess.CalledProcessError as e:
         print(f"[network-config] Warning: Failed to restart dhcpcd: {e}", flush=True)
         # Continue anyway
     
     try:
-        # Restart wpa_supplicant if WiFi was configured
+        # Restart wpa_supplicant AFTER dhcpcd
         subprocess.run(
             ["systemctl", "restart", "wpa_supplicant"],
             check=True,
@@ -227,12 +257,12 @@ def restart_network_services():
             stderr=subprocess.PIPE
         )
         print("[network-config] wpa_supplicant restarted", flush=True)
+        time.sleep(3)  # Give wpa_supplicant time to connect
     except subprocess.CalledProcessError as e:
         print(f"[network-config] Warning: Failed to restart wpa_supplicant: {e}", flush=True)
         # Continue anyway
     
-    # Give services time to restart
-    import time
+    # Give services time to settle
     time.sleep(2)
     
     print("[network-config] Network services restarted", flush=True)
