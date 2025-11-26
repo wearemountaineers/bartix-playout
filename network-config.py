@@ -55,6 +55,33 @@ def configure_wifi(ssid, password=None):
     """
     print(f"[network-config] Configuring WiFi: {ssid}", flush=True)
     
+    # IMPORTANT: Stop hotspot before configuring WiFi (wlan0 conflict)
+    # The hotspot uses wlan0 in AP mode, but WiFi client needs it in managed mode
+    # They cannot coexist on the same interface
+    print("[network-config] Stopping hotspot to free wlan0 interface for WiFi client...", flush=True)
+    subprocess.run(
+        ["systemctl", "stop", "hostapd"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+    subprocess.run(
+        ["systemctl", "stop", "dnsmasq"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+    # Bring interface down to reset mode
+    subprocess.run(
+        ["ip", "link", "set", "wlan0", "down"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+    import time
+    time.sleep(2)
+    print("[network-config] Hotspot stopped, wlan0 interface freed", flush=True)
+    
     # Backup existing config
     backup_file(WPA_SUPPLICANT_CONF)
     
@@ -256,4 +283,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
