@@ -3,26 +3,24 @@ set -euo pipefail
 
 usage() {
 cat <<USAGE
-Usage: $0 –user  –manifest  [–device ]
+Usage: $0 --user <user> --manifest <url> [--device <device>]
 
 Examples:
-sudo $0 –user admin 
-–manifest https://alive-radio.s3.eu-west-1.amazonaws.com/stream.json 
-–device “alsa/plughw:CARD=Headphones,DEV=0”
+sudo $0 --user admin --manifest https://alive-radio.s3.eu-west-1.amazonaws.com/stream.json --device "alsa/plughw:CARD=Headphones,DEV=0"
 USAGE
 }
 
-USER_NAME=””
-MANIFEST_URL=””
-DEVICE=“alsa/plughw:CARD=Headphones,DEV=0”
+USER_NAME=""
+MANIFEST_URL=""
+DEVICE="alsa/plughw:CARD=Headphones,DEV=0"
 
 while [[ $# -gt 0 ]]; do
-case “$1” in
-–user) USER_NAME=”$2”; shift 2;;
-–manifest) MANIFEST_URL=”$2”; shift 2;;
-–device) DEVICE=”$2”; shift 2;;
--h|–help) usage; exit 0;;
-*) echo “Unknown arg: $1”; usage; exit 1;;
+case "$1" in
+--user) USER_NAME="$2"; shift 2;;
+--manifest) MANIFEST_URL="$2"; shift 2;;
+--device) DEVICE="$2"; shift 2;;
+-h|--help) usage; exit 0;;
+*) echo "Unknown arg: $1"; usage; exit 1;;
 esac
 done
 
