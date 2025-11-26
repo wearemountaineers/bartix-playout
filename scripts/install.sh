@@ -44,9 +44,7 @@ sudo install -m 0644 systemd/stream-player.service /etc/systemd/system/stream-pl
 sudo install -m 0644 systemd/network-manager.service /etc/systemd/system/network-manager.service
 sudo install -m 0644 systemd/config-server.service /etc/systemd/system/config-server.service
 
-# Copy hotspot configuration files
-sudo mkdir -p /etc/hostapd
-sudo install -m 0644 config/hostapd.conf /etc/hostapd/hostapd.conf
+# Copy hotspot configuration files (hostapd.conf is copied later, before configuring)
 sudo mkdir -p /etc/dnsmasq.d
 sudo install -m 0644 config/dnsmasq-hotspot.conf /etc/dnsmasq.d/hotspot.conf
 
@@ -55,6 +53,14 @@ sudo mkdir -p /usr/local/share/bartix/templates
 sudo install -m 0644 templates/config.html /usr/local/share/bartix/templates/config.html
 
 # Configure hostapd to use our config
+# First, ensure the config file exists (copy it before configuring)
+sudo mkdir -p /etc/hostapd
+sudo install -m 0644 config/hostapd.conf /etc/hostapd/hostapd.conf
+
+# Unmask hostapd service (it might be masked by default)
+sudo systemctl unmask hostapd 2>/dev/null || true
+
+# Configure /etc/default/hostapd
 if [ -f /etc/default/hostapd ]; then
     sudo sed -i 's|^#DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
     sudo sed -i 's|^DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
@@ -62,6 +68,9 @@ if [ -f /etc/default/hostapd ]; then
     if ! grep -q "^DAEMON_CONF=" /etc/default/hostapd; then
         echo 'DAEMON_CONF="/etc/hostapd/hostapd.conf"' | sudo tee -a /etc/default/hostapd
     fi
+else
+    # Create /etc/default/hostapd if it doesn't exist
+    echo 'DAEMON_CONF="/etc/hostapd/hostapd.conf"' | sudo tee /etc/default/hostapd
 fi
 
 # Disable dnsmasq from starting automatically (we'll control it)

@@ -230,6 +230,14 @@ def start_hotspot():
         )
         time.sleep(1)
         
+        # Unmask hostapd if it's masked (required before starting)
+        subprocess.run(
+            ["systemctl", "unmask", HOSTAPD_SERVICE],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        
         # Stop hostapd if it's already running (clean start)
         subprocess.run(
             ["systemctl", "stop", HOSTAPD_SERVICE],
