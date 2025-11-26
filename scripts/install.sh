@@ -29,7 +29,7 @@ done
 #Packages
 
 sudo apt-get update
-sudo apt-get install -y python3 mpv ca-certificates alsa-utils hostapd dnsmasq iw wireless-tools
+sudo apt-get install -y python3 mpv ca-certificates alsa-utils hostapd dnsmasq iw wireless-tools rfkill
 
 #Copy files
 
@@ -58,11 +58,26 @@ sudo install -m 0644 templates/config.html /usr/local/share/bartix/templates/con
 if [ -f /etc/default/hostapd ]; then
     sudo sed -i 's|^#DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
     sudo sed -i 's|^DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
+    # Ensure DAEMON_CONF is set
+    if ! grep -q "^DAEMON_CONF=" /etc/default/hostapd; then
+        echo 'DAEMON_CONF="/etc/hostapd/hostapd.conf"' | sudo tee -a /etc/default/hostapd
+    fi
 fi
 
 # Disable dnsmasq from starting automatically (we'll control it)
 sudo systemctl disable dnsmasq || true
 sudo systemctl stop dnsmasq || true
+
+# Disable wpa_supplicant from managing wlan0 (it conflicts with hostapd)
+if [ -f /etc/dhcpcd.conf ]; then
+    # Add denyinterfaces wlan0 to prevent dhcpcd from managing it
+    if ! grep -q "denyinterfaces wlan0" /etc/dhcpcd.conf; then
+        echo "denyinterfaces wlan0" | sudo tee -a /etc/dhcpcd.conf
+    fi
+fi
+
+# Stop wpa_supplicant if running (will be started by network-manager when needed)
+sudo systemctl stop wpa_supplicant || true
 
 #Replace service placeholders
 

@@ -194,7 +194,62 @@ def stop_hotspot():
 def start_hotspot():
     """Start WiFi hotspot."""
     try:
+        # Check if interface exists
+        result = subprocess.run(
+            ["ip", "link", "show", HOTSPOT_INTERFACE],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if result.returncode != 0:
+            print(f"[network-manager] Error: Interface {HOTSPOT_INTERFACE} not found", flush=True)
+            return False
+        
+        # Check if interface supports AP mode
+        if not check_interface_supports_ap_mode(HOTSPOT_INTERFACE):
+            print(f"[network-manager] Warning: Interface {HOTSPOT_INTERFACE} may not support AP mode", flush=True)
+            # Continue anyway, hostapd will fail with a clearer error if not supported
+        
+        # Unblock WiFi if blocked (common on Raspberry Pi)
+        print(f"[network-manager] Unblocking WiFi...", flush=True)
+        subprocess.run(
+            ["rfkill", "unblock", "wifi"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        time.sleep(1)
+        
+        # Stop wpa_supplicant if it's running (it conflicts with hostapd)
+        print(f"[network-manager] Stopping wpa_supplicant...", flush=True)
+        subprocess.run(
+            ["systemctl", "stop", "wpa_supplicant"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        time.sleep(1)
+        
+        # Stop hostapd if it's already running (clean start)
+        subprocess.run(
+            ["systemctl", "stop", HOSTAPD_SERVICE],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        time.sleep(1)
+        
+        # Stop dnsmasq if running
+        subprocess.run(
+            ["systemctl", "stop", DNSMASQ_SERVICE],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        time.sleep(1)
+        
         # Ensure interface is down first
+        print(f"[network-manager] Configuring interface {HOTSPOT_INTERFACE}...", flush=True)
         subprocess.run(
             ["ip", "link", "set", HOTSPOT_INTERFACE, "down"],
             check=False,
@@ -210,46 +265,111 @@ def start_hotspot():
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
-        subprocess.run(
+        result = subprocess.run(
             ["ip", "addr", "add", f"{HOTSPOT_IP}/{HOTSPOT_NETMASK}", "dev", HOTSPOT_INTERFACE],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            capture_output=True,
+            text=True,
+            check=False
         )
-        subprocess.run(
+        if result.returncode != 0:
+            print(f"[network-manager] Warning: Failed to set IP: {result.stderr}", flush=True)
+        
+        result = subprocess.run(
             ["ip", "link", "set", HOTSPOT_INTERFACE, "up"],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            capture_output=True,
+            text=True,
+            check=False
         )
+        if result.returncode != 0:
+            print(f"[network-manager] Error bringing interface up: {result.stderr}", flush=True)
+            return False
+        
         time.sleep(2)
         
         # Start dnsmasq
-        subprocess.run(
+        print(f"[network-manager] Starting dnsmasq...", flush=True)
+        result = subprocess.run(
             ["systemctl", "start", DNSMASQ_SERVICE],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            capture_output=True,
+            text=True,
+            check=False
         )
+        if result.returncode != 0:
+            print(f"[network-manager] Error starting dnsmasq: {result.stderr}", flush=True)
+            # Continue anyway, hostapd might still work
+        
         time.sleep(1)
         
         # Start hostapd
-        subprocess.run(
+        print(f"[network-manager] Starting hostapd...", flush=True)
+        result = subprocess.run(
             ["systemctl", "start", HOSTAPD_SERVICE],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            capture_output=True,
+            text=True,
+            check=False
         )
+        if result.returncode != 0:
+            error_msg = result.stderr or "Unknown error"
+            print(f"[network-manager] Error starting hostapd: {error_msg}", flush=True)
+            # Try to get more details from journalctl
+            journal_result = subprocess.run(
+                ["journalctl", "-u", HOSTAPD_SERVICE, "-n", "10", "--no-pager"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if journal_result.returncode == 0:
+                print(f"[network-manager] hostapd logs:\n{journal_result.stdout}", flush=True)
+            return False
+        
         time.sleep(2)
         
         if is_hotspot_running():
             print(f"[network-manager] Hotspot '{HOTSPOT_SSID}' started on {HOTSPOT_INTERFACE}", flush=True)
             return True
         else:
-            print(f"[network-manager] Failed to start hotspot", flush=True)
+            print(f"[network-manager] Failed to start hotspot - service started but interface not in AP mode", flush=True)
             return False
     except Exception as e:
         print(f"[network-manager] Error starting hotspot: {e}", flush=True)
+        import traceback
+        print(f"[network-manager] Traceback: {traceback.format_exc()}", flush=True)
+        return False
+
+
+def check_interface_supports_ap_mode(interface):
+    """Check if WiFi interface supports AP (access point) mode."""
+    try:
+        result = subprocess.run(
+            ["iw", "dev", interface, "info"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if result.returncode != 0:
+            print(f"[network-manager] Interface {interface} not found or not a WiFi device", flush=True)
+            return False
+        
+        # Check if interface supports AP mode
+        result = subprocess.run(
+            ["iw", "phy", "phy0", "info"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if "AP" in result.stdout or "* AP" in result.stdout:
+            return True
+        
+        # Alternative check: try to set interface type
+        result = subprocess.run(
+            ["iw", "dev", interface, "set", "type", "ap"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        return result.returncode == 0
+    except Exception as e:
+        print(f"[network-manager] Error checking AP mode support: {e}", flush=True)
         return False
 
 
@@ -260,7 +380,13 @@ def ensure_hotspot_config():
     """
     # This will be called by install script to create configs
     # For now, just check if they exist
-    return os.path.exists(HOSTAPD_CONF) and os.path.exists(DNSMASQ_CONF)
+    if not os.path.exists(HOSTAPD_CONF):
+        print(f"[network-manager] hostapd config not found: {HOSTAPD_CONF}", flush=True)
+        return False
+    if not os.path.exists(DNSMASQ_CONF):
+        print(f"[network-manager] dnsmasq config not found: {DNSMASQ_CONF}", flush=True)
+        return False
+    return True
 
 
 def main_loop():
