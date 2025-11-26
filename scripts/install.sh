@@ -81,6 +81,11 @@ sudo sed "s/ssid=bartix-config/ssid=${HOTSPOT_SSID}/" config/hostapd.conf | \
 sudo sed "s/wpa_passphrase=bartix-config/wpa_passphrase=${HOTSPOT_PASSWORD}/" | \
 sudo tee /etc/hostapd/hostapd.conf > /dev/null
 
+# Ensure hostapd control interface directory exists
+sudo mkdir -p /var/run/hostapd
+sudo chown root:root /var/run/hostapd
+sudo chmod 755 /var/run/hostapd
+
 # Unmask hostapd service (it might be masked by default)
 sudo systemctl unmask hostapd 2>/dev/null || true
 

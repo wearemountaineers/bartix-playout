@@ -78,24 +78,44 @@ sudo bash scripts/install.sh --user admin \
 > - For HDMI audio, use `alsa/plughw:CARD=vc4hdmi,DEV=0`.
 
 This installs:
-- `bootstream.py` to `/usr/local/bin`
-- `stream-player.service` to `/etc/systemd/system`
-- Enables and starts the service at boot.
+- `bootstream.py`, `network-manager.py`, `config-server.py`, `network-config.py` to `/usr/local/bin`
+- `stream-player.service`, `network-manager.service`, `config-server.service` to `/etc/systemd/system`
+- WiFi hotspot configuration (`hostapd`, `dnsmasq`)
+- Web configuration interface
+- Enables and starts all services at boot
 
 ---
 
 ### 3️⃣ Reboot or start manually
 
 ```bash
+sudo systemctl restart network-manager.service
+sudo systemctl restart config-server.service
 sudo systemctl restart stream-player.service
+```
+
+Check service status:
+```bash
+# Check all services
+sudo systemctl status network-manager.service
+sudo systemctl status config-server.service
+sudo systemctl status stream-player.service
+
+# View logs
 journalctl -u stream-player.service -f
+journalctl -u network-manager.service -f
+journalctl -u config-server.service -f
 ```
 
 You should see logs like:
 ```
 [bootstream] Starting: mpv --no-video --ao=alsa --audio-device=alsa/plughw:1,0 ...
+[network-manager] Hotspot 'bartix-config-XXXX' started and broadcasting on wlan0
+[config-server] Configuration server started on port 8080
 ```
 and hear your stream!
+
+**After installation, you should see a WiFi hotspot** with SSID `bartix-config-XXXX`. Connect to it and access the web interface at `http://192.168.4.1:8080`.
 
 ---
 
@@ -142,24 +162,44 @@ sudo raspi-config
 
 ## ⚙️ Systemd Management
 
-Start immediately:
+**Services:**
+- `stream-player.service` - Main audio stream player
+- `network-manager.service` - Network connectivity detection and WiFi hotspot management
+- `config-server.service` - Web configuration interface
+
+**Start services:**
 ```bash
+sudo systemctl start network-manager.service
+sudo systemctl start config-server.service
 sudo systemctl start stream-player.service
 ```
 
-Check logs:
+**Check logs:**
 ```bash
 journalctl -u stream-player.service -f
+journalctl -u network-manager.service -f
+journalctl -u config-server.service -f
 ```
 
-Enable on boot:
+**Enable on boot:**
 ```bash
+sudo systemctl enable network-manager.service
+sudo systemctl enable config-server.service
 sudo systemctl enable stream-player.service
 ```
 
-Stop:
+**Stop services:**
 ```bash
 sudo systemctl stop stream-player.service
+sudo systemctl stop config-server.service
+sudo systemctl stop network-manager.service
+```
+
+**Restart all services:**
+```bash
+sudo systemctl restart network-manager.service
+sudo systemctl restart config-server.service
+sudo systemctl restart stream-player.service
 ```
 
 ---
@@ -215,12 +255,16 @@ sudo systemctl restart stream-player.service
 
 If the system cannot get a network connection via DHCP or if network connectivity is lost, a WiFi hotspot is automatically created:
 
-- **SSID**: `bartix-config`
-- **Password**: `bartix-config`
+- **SSID**: `bartix-config-XXXX` (where XXXX is a unique 4-digit ID based on MAC address)
+- **Password**: `bartix-XXXX` (matches the unique ID)
 - **IP Range**: `192.168.4.0/24`
 - **Gateway**: `192.168.4.1`
+- **Transmit Power**: Maximum (20 dBm) for best visibility
+- **Regulatory Domain**: Automatically set (defaults to NL if not configured)
 
 The hotspot is **always active** (even when main network is working) to ensure you can always access the configuration interface.
+
+**Note**: The unique SSID ensures multiple bartix instances can run nearby without conflicts.
 
 ### Web Configuration Interface
 
@@ -230,17 +274,44 @@ When connected to the hotspot (or when the system has network), access the web c
 http://192.168.4.1:8080
 ```
 
+**Authentication**: The web interface is password-protected. The default password is set during installation. You can change it via the System tab in the web interface.
+
+**First-time Access**: If you haven't set a password yet, you may need to set one via the System tab before accessing other features.
+
 The interface allows you to configure:
 
 1. **WiFi Configuration**:
-   - SSID
-   - Password
+   - SSID (with network scanning)
+   - Password (with connection testing)
+   - Scan for available networks
+   - Test WiFi connection before applying
 
 2. **LAN Static IP Configuration**:
    - Static IP address
    - Subnet mask
    - Gateway
    - DNS server
+
+3. **Hotspot Configuration**:
+   - Hotspot SSID (with unique ID)
+   - Hotspot password
+
+4. **Manifest Management**:
+   - Update manifest URL
+   - Test manifest URL accessibility
+   - Check current manifest URL
+
+5. **Volume Control**:
+   - Adjust system volume via slider
+
+6. **System Logs**:
+   - View logs for `network-manager` service
+   - View logs for `config-server` service
+   - View logs for `stream-player` service
+
+7. **System Management**:
+   - Reboot system
+   - Set/change web interface password
 
 After applying configuration, network services will restart automatically.
 
@@ -258,9 +329,46 @@ The system automatically:
 | Issue | Solution |
 |-------|----------|
 | Can't connect to hotspot | Check WiFi adapter is enabled: `sudo rfkill unblock wifi` |
-| Hotspot not starting | Check logs: `journalctl -u network-manager.service -f` |
+| Hotspot not visible/not broadcasting | Check logs: `journalctl -u network-manager.service -f`<br>Verify regulatory domain: `iw reg get`<br>Check transmit power: `iw dev wlan0 info \| grep txpower`<br>Set transmit power manually: `sudo iw dev wlan0 set txpower fixed 2000`<br>Restart hostapd: `sudo systemctl restart hostapd` |
+| Hotspot not starting | Check logs: `journalctl -u network-manager.service -f`<br>Check hostapd logs: `journalctl -u hostapd -n 50`<br>Verify interface is available: `ip link show wlan0`<br>Check if hostapd is masked: `systemctl status hostapd` |
 | Configuration not applying | Check network-config.py logs and verify file permissions |
-| Can't access web interface | Ensure config-server is running: `sudo systemctl status config-server.service` |
+| Can't access web interface | Ensure config-server is running: `sudo systemctl status config-server.service`<br>Check if port 8080 is accessible: `curl http://192.168.4.1:8080` |
+| Can't scan for WiFi networks | When `wlan0` is in AP mode, you cannot scan with it from the same device. Use another device (phone, laptop) to scan, or temporarily stop the hotspot to scan. |
+| Regulatory domain not set | The system automatically sets the regulatory domain. If issues persist:<br>`sudo iw reg set NL` (or your country code)<br>Check current setting: `iw reg get` |
+
+**Diagnostic Commands:**
+
+```bash
+# Check hotspot status
+sudo systemctl status hostapd
+sudo systemctl status network-manager.service
+
+# View detailed logs
+sudo journalctl -u network-manager.service -f
+sudo journalctl -u hostapd -n 50 --no-pager
+
+# Check interface status
+iw dev wlan0 info
+ip link show wlan0
+
+# Check regulatory domain and transmit power
+iw reg get
+iw dev wlan0 info | grep txpower
+
+# Verify hotspot is broadcasting (from another device)
+# Or check hostapd_cli status
+sudo hostapd_cli -i wlan0 status
+sudo hostapd_cli -i wlan0 get_config ssid
+
+# Manually set transmit power if needed
+sudo iw dev wlan0 set txpower fixed 2000
+```
+
+**Important Notes:**
+- **Scanning Limitation**: When `wlan0` is in AP mode (hotspot active), you cannot use `iwlist wlan0 scan` or `iw dev wlan0 scan` from the same device. You must scan from another device (phone, laptop, etc.) or temporarily stop the hotspot.
+- **Regulatory Domain**: The system automatically sets the regulatory domain based on `/etc/wpa_supplicant/wpa_supplicant.conf` or defaults to `NL`. This is critical for hotspot visibility.
+- **Transmit Power**: The system sets transmit power to maximum (20 dBm = 2000 mW) for best visibility. If the hotspot is not visible, manually set it: `sudo iw dev wlan0 set txpower fixed 2000`.
+- **Hotspot Verification**: The system uses `hostapd_cli` to verify the SSID is actually being broadcast. Check logs for verification status.
 
 ## 🗑️ Uninstallation
 

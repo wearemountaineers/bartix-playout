@@ -240,6 +240,8 @@ def verify_hotspot_broadcasting():
                 print(f"[network-manager] Warning: Error checking transmit power: {e}", flush=True)
         
         # Verify with hostapd_cli that SSID is actually being broadcast
+        # Note: hostapd_cli requires control interface to be configured in hostapd.conf
+        # If control interface is not configured, this check will fail but that's OK
         result = subprocess.run(
             ["hostapd_cli", "-i", HOTSPOT_INTERFACE, "status"],
             capture_output=True,
@@ -256,11 +258,18 @@ def verify_hotspot_broadcasting():
                 print(f"[network-manager] Warning: hostapd_cli status doesn't show expected state", flush=True)
                 print(f"[network-manager] hostapd_cli output: {status_output}", flush=True)
         else:
-            print(f"[network-manager] Warning: hostapd_cli check failed (return code {result.returncode})", flush=True)
-            print(f"[network-manager] hostapd_cli error: {result.stderr}", flush=True)
-            # Don't fail verification just because hostapd_cli failed - it might be a timing issue
+            # hostapd_cli failure is not critical - it might be a config issue or timing
+            # The important checks (interface in AP mode, hostapd service active) already passed
+            if "No such file or directory" in result.stderr or "Failed to connect" in result.stderr:
+                print(f"[network-manager] Note: hostapd_cli cannot connect (control interface may not be configured)", flush=True)
+                print(f"[network-manager] This is not critical - hotspot may still be working. Check interface status above.", flush=True)
+            else:
+                print(f"[network-manager] Warning: hostapd_cli check failed (return code {result.returncode})", flush=True)
+                print(f"[network-manager] hostapd_cli error: {result.stderr}", flush=True)
         
-        # Check regulatory domain
+        # Check regulatory domain (only warn once, not repeatedly)
+        # The regulatory domain should be set in start_hotspot() and main_loop()
+        # This check is just informational
         result = subprocess.run(
             ["iw", "reg", "get"],
             capture_output=True,
@@ -268,9 +277,29 @@ def verify_hotspot_broadcasting():
             check=False
         )
         if result.returncode == 0:
-            if "country 99" in result.stdout or "DFS-UNSET" in result.stdout:
-                print(f"[network-manager] Warning: Regulatory domain not set (country 99/DFS-UNSET detected)", flush=True)
-                print(f"[network-manager] This may prevent the hotspot from being visible", flush=True)
+            # Check if phy#0 still has country 99 (this is the actual interface setting)
+            if "phy#0 country 99" in result.stdout or "DFS-UNSET" in result.stdout:
+                # Try to set it at the phy level as well
+                country_code = "NL"  # default
+                try:
+                    if os.path.exists("/etc/wpa_supplicant/wpa_supplicant.conf"):
+                        with open("/etc/wpa_supplicant/wpa_supplicant.conf", "r") as f:
+                            for line in f:
+                                if line.strip().startswith("country="):
+                                    country_code = line.split("=")[1].strip().upper()
+                                    break
+                except Exception:
+                    pass
+                
+                # Set at phy level (this is what actually matters for the interface)
+                print(f"[network-manager] Setting regulatory domain at phy level to {country_code}...", flush=True)
+                subprocess.run(
+                    ["iw", "reg", "set", country_code],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                time.sleep(1)
         
         return True
     except Exception as e:
@@ -738,6 +767,7 @@ def main_loop():
         print("[network-manager] Will continue and retry hotspot start in monitor loop", flush=True)
     
     # Set WiFi country code if not set (required for AP mode)
+    # This must be done early and persistently
     try:
         result = subprocess.run(
             ["iw", "reg", "get"],
@@ -745,26 +775,55 @@ def main_loop():
             text=True,
             check=False
         )
-        if "country 99" in result.stdout or "DFS-UNSET" in result.stdout:
-            # Try to get country from wpa_supplicant.conf
-            country_code = "NL"  # default
-            try:
-                if os.path.exists("/etc/wpa_supplicant/wpa_supplicant.conf"):
-                    with open("/etc/wpa_supplicant/wpa_supplicant.conf", "r") as f:
-                        for line in f:
-                            if line.strip().startswith("country="):
-                                country_code = line.split("=")[1].strip().upper()
-                                break
-            except Exception:
-                pass
-            
-            print(f"[network-manager] Setting WiFi country code to {country_code}...", flush=True)
-            subprocess.run(
-                ["iw", "reg", "set", country_code],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+        if result.returncode == 0:
+            if "country 99" in result.stdout or "DFS-UNSET" in result.stdout:
+                # Try to get country from wpa_supplicant.conf
+                country_code = "NL"  # default
+                try:
+                    if os.path.exists("/etc/wpa_supplicant/wpa_supplicant.conf"):
+                        with open("/etc/wpa_supplicant/wpa_supplicant.conf", "r") as f:
+                            for line in f:
+                                if line.strip().startswith("country="):
+                                    country_code = line.split("=")[1].strip().upper()
+                                    break
+                except Exception:
+                    pass
+                
+                print(f"[network-manager] Setting WiFi country code to {country_code}...", flush=True)
+                # Set regulatory domain (global)
+                set_result = subprocess.run(
+                    ["iw", "reg", "set", country_code],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                if set_result.returncode != 0:
+                    print(f"[network-manager] Error setting country code: {set_result.stderr}", flush=True)
+                else:
+                    time.sleep(2)
+                    # Verify it was set
+                    verify_result = subprocess.run(
+                        ["iw", "reg", "get"],
+                        capture_output=True,
+                        text=True,
+                        check=False
+                    )
+                    if verify_result.returncode == 0:
+                        # Check both global and phy level
+                        if country_code.lower() in verify_result.stdout.lower() and "phy#0 country 99" not in verify_result.stdout:
+                            print(f"[network-manager] Regulatory domain successfully set to {country_code}", flush=True)
+                        else:
+                            print(f"[network-manager] Warning: Regulatory domain may not be set correctly at phy level", flush=True)
+                            print(f"[network-manager] Current reg output: {verify_result.stdout}", flush=True)
+                            # Try setting it again (sometimes needs multiple attempts)
+                            print(f"[network-manager] Attempting to set regulatory domain again...", flush=True)
+                            subprocess.run(
+                                ["iw", "reg", "set", country_code],
+                                check=False,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL
+                            )
+                            time.sleep(2)
     except Exception as e:
         print(f"[network-manager] Warning: Could not set country code: {e}", flush=True)
     
