@@ -1,10 +1,11 @@
 [Unit]
 Description=Network Manager: Detects connectivity and manages WiFi hotspot
 Wants=network-online.target
-After=network-online.target
+# Don't wait for network-online, just start after basic services
+After=basic.target
 Before=stream-player.service
-# Ensure WiFi interface is available
-After=sys-subsystem-net-devices-wlan0.device
+# Wait a bit for system to settle
+DefaultDependencies=yes
 
 [Service]
 Type=simple
@@ -16,12 +17,19 @@ Environment=HOTSPOT_PASSWORD=bartix-config
 Environment=HOTSPOT_INTERFACE=wlan0
 Environment=HOTSPOT_IP=192.168.4.1
 # Don't wait too long for network-online (it may never come)
-TimeoutStartSec=60
-# Pre-start: Ensure WiFi is unblocked and ready (if interface exists)
-ExecStartPre=/bin/sh -c 'if [ -e /sys/class/net/wlan0 ]; then rfkill unblock wifi || true; sleep 1; iw dev wlan0 set txpower fixed 2000 || true; fi'
+TimeoutStartSec=90
+# Pre-start: Wait for WiFi interface and ensure it's ready
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do [ -e /sys/class/net/wlan0 ] && break; sleep 1; done'
+ExecStartPre=/bin/sh -c 'rfkill unblock wifi || true'
+ExecStartPre=/bin/sh -c 'sleep 2'
+ExecStartPre=/bin/sh -c 'iw dev wlan0 set txpower fixed 2000 || true'
+ExecStartPre=/bin/sh -c 'iw reg set NL || true'
 ExecStart=/usr/bin/env python3 /usr/local/bin/network-manager.py
 Restart=always
-RestartSec=5
+RestartSec=10
+# Give it time to start before considering it failed
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 # Resource limits
 LimitNOFILE=1024

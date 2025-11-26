@@ -481,6 +481,31 @@ def main_loop():
     
     print("[network-manager] Starting network manager...", flush=True)
     
+    # Wait for WiFi interface to be available (important on boot)
+    print("[network-manager] Waiting for WiFi interface to be available...", flush=True)
+    interface_wait_timeout = 30
+    interface_available = False
+    for i in range(interface_wait_timeout):
+        try:
+            result = subprocess.run(
+                ["ip", "link", "show", HOTSPOT_INTERFACE],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode == 0:
+                interface_available = True
+                print(f"[network-manager] WiFi interface {HOTSPOT_INTERFACE} is available", flush=True)
+                break
+        except Exception:
+            pass
+        if i < interface_wait_timeout - 1:
+            time.sleep(1)
+    
+    if not interface_available:
+        print(f"[network-manager] Warning: WiFi interface {HOTSPOT_INTERFACE} not found after {interface_wait_timeout}s", flush=True)
+        print("[network-manager] Will continue and retry hotspot start in monitor loop", flush=True)
+    
     # Set WiFi country code if not set (required for AP mode)
     try:
         result = subprocess.run(
@@ -516,24 +541,41 @@ def main_loop():
     print("[network-manager] Checking network connectivity...", flush=True)
     has_ip, has_internet = wait_for_network(timeout=NETWORK_WAIT_TIMEOUT, check_internet=False)
     
+    # Wait a bit more for system to fully settle after boot
+    print("[network-manager] Waiting for system to settle...", flush=True)
+    time.sleep(3)
+    
     # Always start hotspot (as per requirement: always available)
-    if not is_hotspot_running():
+    print("[network-manager] Ensuring hotspot is started...", flush=True)
+    max_retries = 3
+    hotspot_started = False
+    
+    for attempt in range(max_retries):
+        if is_hotspot_running() and verify_hotspot_broadcasting():
+            print("[network-manager] Hotspot already running and broadcasting", flush=True)
+            hotspot_started = True
+            break
+        
         if ensure_hotspot_config():
-            if not start_hotspot():
-                print("[network-manager] Failed to start hotspot initially, will retry in monitor loop", flush=True)
+            if start_hotspot():
+                # Verify it's actually broadcasting
+                time.sleep(2)
+                if verify_hotspot_broadcasting():
+                    hotspot_started = True
+                    break
+                else:
+                    print(f"[network-manager] Hotspot started but not broadcasting, retry {attempt + 1}/{max_retries}...", flush=True)
+            else:
+                print(f"[network-manager] Failed to start hotspot, retry {attempt + 1}/{max_retries}...", flush=True)
         else:
             print("[network-manager] Warning: Hotspot config files not found. Run install script.", flush=True)
-    else:
-        # Verify hotspot is actually broadcasting even if service says it's running
-        if not verify_hotspot_broadcasting():
-            print("[network-manager] Hotspot service running but not broadcasting, restarting...", flush=True)
-            subprocess.run(
-                ["systemctl", "restart", HOSTAPD_SERVICE],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            time.sleep(3)
+            break
+        
+        if attempt < max_retries - 1:
+            time.sleep(5)  # Wait before retry
+    
+    if not hotspot_started:
+        print("[network-manager] Warning: Hotspot not started after retries, will continue monitoring", flush=True)
     
     # Monitor loop
     last_check = time.time()

@@ -105,6 +105,9 @@ sudo sed -i "s|Environment=HOTSPOT_PASSWORD=.*|Environment=HOTSPOT_PASSWORD=${HO
 sudo systemctl disable dnsmasq || true
 sudo systemctl stop dnsmasq || true
 
+# Ensure hostapd is enabled (so it can be started by network-manager)
+sudo systemctl enable hostapd || true
+
 # Disable wpa_supplicant from managing wlan0 (it conflicts with hostapd)
 if [ -f /etc/dhcpcd.conf ]; then
     # Add denyinterfaces wlan0 to prevent dhcpcd from managing it
