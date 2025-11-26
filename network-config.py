@@ -138,7 +138,91 @@ def configure_wifi(ssid, password=None):
         f.writelines(config_lines)
     
     print(f"[network-config] WiFi configuration updated", flush=True)
-    return True
+    
+    # Restart network services to apply configuration
+    restart_network_services()
+    
+    # Monitor WiFi connection status
+    print("[network-config] Monitoring WiFi connection status...", flush=True)
+    import time
+    max_wait = 30  # Wait up to 30 seconds for connection
+    check_interval = 2  # Check every 2 seconds
+    
+    for i in range(0, max_wait, check_interval):
+        time.sleep(check_interval)
+        
+        # Check if wlan0 has an IP address
+        result = subprocess.run(
+            ["ip", "addr", "show", "wlan0"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        has_ip = False
+        ip_address = None
+        if result.returncode == 0:
+            import re
+            # Look for inet address (not 127.0.0.1)
+            matches = re.findall(r'inet (\d+\.\d+\.\d+\.\d+)/', result.stdout)
+            for match in matches:
+                if match != "127.0.0.1":
+                    has_ip = True
+                    ip_address = match
+                    break
+        
+        # Check wpa_supplicant status
+        wpa_status = "unknown"
+        result = subprocess.run(
+            ["wpa_cli", "-i", "wlan0", "status"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                if line.startswith("wpa_state="):
+                    wpa_status = line.split("=", 1)[1].strip()
+                    break
+        
+        if has_ip:
+            print(f"[network-config] ✓ WiFi connection successful!", flush=True)
+            print(f"[network-config] IP address: {ip_address}", flush=True)
+            print(f"[network-config] Connection state: {wpa_status}", flush=True)
+            return True
+        else:
+            elapsed = i + check_interval
+            print(f"[network-config] Waiting for WiFi connection... ({elapsed}s/{max_wait}s, state: {wpa_status})", flush=True)
+    
+    # Final check
+    result = subprocess.run(
+        ["ip", "addr", "show", "wlan0"],
+        capture_output=True,
+        text=True,
+        check=False
+    )
+    has_ip = False
+    ip_address = None
+    if result.returncode == 0:
+        import re
+        matches = re.findall(r'inet (\d+\.\d+\.\d+\.\d+)/', result.stdout)
+        for match in matches:
+            if match != "127.0.0.1":
+                has_ip = True
+                ip_address = match
+                break
+    
+    if has_ip:
+        print(f"[network-config] ✓ WiFi connection successful (after {max_wait}s)!", flush=True)
+        print(f"[network-config] IP address: {ip_address}", flush=True)
+        return True
+    else:
+        print(f"[network-config] ⚠ WiFi configuration applied but no IP address obtained after {max_wait}s", flush=True)
+        print(f"[network-config] Connection state: {wpa_status}", flush=True)
+        print(f"[network-config] This may be normal if the network requires additional authentication or has slow DHCP", flush=True)
+        print(f"[network-config] Check connection status: wpa_cli -i wlan0 status", flush=True)
+        return False
 
 
 def clear_wifi():

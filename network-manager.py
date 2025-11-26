@@ -31,6 +31,9 @@ DNSMASQ_CONF = "/etc/dnsmasq.d/hotspot.conf"
 HOSTAPD_SERVICE = "hostapd"
 DNSMASQ_SERVICE = "dnsmasq"
 
+# Track if regulatory domain has been set (to avoid setting it repeatedly)
+_regulatory_domain_set = False
+
 
 def get_active_interfaces():
     """Get list of network interfaces with active IP addresses."""
@@ -447,16 +450,19 @@ def start_hotspot():
             print(f"[network-manager] Error bringing interface up: {result.stderr}", flush=True)
             return False
         
-        # Ensure regulatory domain is set BEFORE starting hostapd (critical for visibility)
-        print(f"[network-manager] Setting regulatory domain...", flush=True)
-        reg_result = subprocess.run(
-            ["iw", "reg", "get"],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        if reg_result.returncode == 0:
-            if "country 99" in reg_result.stdout or "DFS-UNSET" in reg_result.stdout:
+        # Regulatory domain should only be set once during initialization
+        # Setting it repeatedly interferes with WiFi client connections
+        # It's set in main_loop() initialization, so skip here to avoid interference
+        global _regulatory_domain_set
+        if not _regulatory_domain_set:
+            # Only set if completely unset (first time only)
+            reg_result = subprocess.run(
+                ["iw", "reg", "get"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if reg_result.returncode == 0 and ("country 99" in reg_result.stdout or "DFS-UNSET" in reg_result.stdout):
                 # Try to get country from wpa_supplicant.conf
                 country_code = "NL"  # default
                 try:
@@ -469,27 +475,15 @@ def start_hotspot():
                 except Exception:
                     pass
                 
-                print(f"[network-manager] Setting WiFi country code to {country_code}...", flush=True)
+                print(f"[network-manager] Setting WiFi country code to {country_code} (first time only)...", flush=True)
                 subprocess.run(
                     ["iw", "reg", "set", country_code],
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL
                 )
+                _regulatory_domain_set = True
                 time.sleep(1)
-                # Verify it was set
-                verify_reg = subprocess.run(
-                    ["iw", "reg", "get"],
-                    capture_output=True,
-                    text=True,
-                    check=False
-                )
-                if verify_reg.returncode == 0:
-                    if country_code.lower() in verify_reg.stdout.lower():
-                        print(f"[network-manager] Regulatory domain set to {country_code}", flush=True)
-                    else:
-                        print(f"[network-manager] Warning: Regulatory domain may not be set correctly", flush=True)
-                        print(f"[network-manager] Current reg: {verify_reg.stdout}", flush=True)
         
         # Set maximum transmit power (20 dBm = 2000 mW) for better visibility
         print(f"[network-manager] Setting maximum transmit power...", flush=True)
@@ -917,6 +911,8 @@ def main_loop():
                         # Check both global and phy level
                         if country_code.lower() in verify_result.stdout.lower() and "phy#0 country 99" not in verify_result.stdout:
                             print(f"[network-manager] Regulatory domain successfully set to {country_code}", flush=True)
+                            global _regulatory_domain_set
+                            _regulatory_domain_set = True
                         else:
                             print(f"[network-manager] Warning: Regulatory domain may not be set correctly at phy level", flush=True)
                             print(f"[network-manager] Current reg output: {verify_result.stdout}", flush=True)
