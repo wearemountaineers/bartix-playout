@@ -83,16 +83,41 @@ def configure_wifi(ssid, password=None):
         else:
             print("[network-config] 'denyinterfaces wlan0' not found in dhcpcd.conf (already removed)", flush=True)
     else:
-        print("[network-config] Warning: /etc/dhcpcd.conf not found", flush=True)
+        print("[network-config] /etc/dhcpcd.conf not found, creating it...", flush=True)
+        os.makedirs(os.path.dirname(dhcpcd_conf), exist_ok=True)
+        with open(dhcpcd_conf, 'w') as f:
+            f.write("# dhcpcd configuration\n")
+            f.write("# Managed by network-config.py\n\n")
+        print("[network-config] Created /etc/dhcpcd.conf", flush=True)
     
     # Backup existing config
     backup_file(WPA_SUPPLICANT_CONF)
     
     # Read existing config or create new
     config_lines = []
+    has_header = False
     if os.path.exists(WPA_SUPPLICANT_CONF):
         with open(WPA_SUPPLICANT_CONF, 'r') as f:
             config_lines = f.readlines()
+        # Check if header exists (ctrl_interface, country, update_config)
+        for line in config_lines:
+            if line.strip().startswith("ctrl_interface") or line.strip().startswith("country=") or line.strip().startswith("update_config"):
+                has_header = True
+                break
+    
+    # If no header, create one at the beginning
+    if not has_header or not config_lines:
+        header = [
+            "ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev\n",
+            "update_config=1\n",
+            "country=NL\n",
+            "\n"
+        ]
+        if config_lines:
+            config_lines = header + config_lines
+        else:
+            config_lines = header
+        print("[network-config] Added required header to wpa_supplicant.conf", flush=True)
     
     # Find or create network block
     network_start = -1
@@ -119,6 +144,8 @@ def configure_wifi(ssid, password=None):
         new_network.append(f'    psk="{password}"\n')
     else:
         new_network.append("    key_mgmt=NONE\n")
+    # Explicitly set scan_ssid=1 to help with connection
+    new_network.append("    scan_ssid=1\n")
     new_network.append("}\n")
     
     # Replace or append network block
@@ -416,19 +443,31 @@ def restart_network_services():
     import time
     
     try:
-        # Restart dhcpcd FIRST (handles both DHCP and static IP)
-        # This is critical for WiFi client to get an IP address
-        subprocess.run(
-            ["systemctl", "restart", "dhcpcd"],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE
+        # Check if dhcpcd service exists
+        result = subprocess.run(
+            ["systemctl", "list-unit-files", "dhcpcd.service"],
+            capture_output=True,
+            text=True,
+            check=False
         )
-        print("[network-config] dhcpcd restarted", flush=True)
-        time.sleep(2)  # Give dhcpcd time to start
+        if "dhcpcd.service" in result.stdout:
+            # Restart dhcpcd FIRST (handles both DHCP and static IP)
+            # This is critical for WiFi client to get an IP address
+            print("[network-config] Restarting dhcpcd...", flush=True)
+            subprocess.run(
+                ["systemctl", "restart", "dhcpcd"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE
+            )
+            print("[network-config] dhcpcd restarted", flush=True)
+            time.sleep(2)  # Give dhcpcd time to start
+        else:
+            print("[network-config] Warning: dhcpcd service not found, skipping restart", flush=True)
+            print("[network-config] Note: Network configuration may still work if using NetworkManager or other DHCP client", flush=True)
     except subprocess.CalledProcessError as e:
         print(f"[network-config] Warning: Failed to restart dhcpcd: {e}", flush=True)
-        # Continue anyway
+        # Continue anyway - dhcpcd might not be installed or might be managed differently
     
     try:
         # Restart wpa_supplicant AFTER dhcpcd
