@@ -61,6 +61,8 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_set_volume()
         elif parsed_path.path == "/reboot":
             self.handle_reboot()
+        elif parsed_path.path == "/update-hotspot":
+            self.handle_update_hotspot()
         else:
             self.send_error(404, "Not Found")
     
@@ -144,11 +146,22 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
                 # Parse volume from amixer output
                 for line in result.stdout.splitlines():
                     if "%" in line and "[" in line:
-                        import re
                         match = re.search(r'\[(\d+)%\]', line)
                         if match:
                             volume = int(match.group(1))
                             break
+            except Exception:
+                pass
+            
+            # Get current hotspot SSID from hostapd config
+            hotspot_ssid = ""
+            try:
+                if os.path.exists("/etc/hostapd/hostapd.conf"):
+                    with open("/etc/hostapd/hostapd.conf", 'r') as f:
+                        for line in f:
+                            if line.strip().startswith("ssid="):
+                                hotspot_ssid = line.split("=", 1)[1].strip()
+                                break
             except Exception:
                 pass
             
@@ -158,7 +171,8 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
                 "hotspot_running": hotspot_running,
                 "network_type": "unknown",
                 "manifest_url": manifest_url,
-                "volume": volume
+                "volume": volume,
+                "hotspot_ssid": hotspot_ssid
             }
             
             self.send_response(200)
@@ -394,6 +408,90 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
             })
         except Exception as e:
             print(f"[config-server] Error setting volume: {e}", flush=True)
+            self.send_json_response(500, {"error": str(e)})
+    
+    def handle_update_hotspot(self):
+        """Handle hotspot SSID and password update."""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode('utf-8'))
+            
+            ssid = data.get('ssid', '').strip()
+            password = data.get('password', '').strip()
+            
+            if not ssid:
+                self.send_json_response(400, {"error": "SSID is required"})
+                return
+            
+            if password and len(password) < 8:
+                self.send_json_response(400, {"error": "Password must be at least 8 characters"})
+                return
+            
+            # Read current hostapd config
+            hostapd_conf = "/etc/hostapd/hostapd.conf"
+            if not os.path.exists(hostapd_conf):
+                self.send_json_response(500, {"error": "hostapd config file not found"})
+                return
+            
+            with open(hostapd_conf, 'r') as f:
+                content = f.read()
+            
+            # Update SSID
+            content = re.sub(r'^ssid=.*$', f'ssid={ssid}', content, flags=re.MULTILINE)
+            
+            # Update password if provided
+            if password:
+                content = re.sub(r'^wpa_passphrase=.*$', f'wpa_passphrase={password}', content, flags=re.MULTILINE)
+                # Ensure WPA is enabled
+                if 'wpa=2' not in content:
+                    content = re.sub(r'^wpa=.*$', 'wpa=2', content, flags=re.MULTILINE)
+            else:
+                # If no password provided, keep existing password (don't change it)
+                pass
+            
+            # Write updated config
+            with open(hostapd_conf, 'w') as f:
+                f.write(content)
+            
+            # Update systemd service environment variables
+            service_file = "/etc/systemd/system/network-manager.service"
+            if os.path.exists(service_file):
+                with open(service_file, 'r') as f:
+                    service_content = f.read()
+                
+                # Update HOTSPOT_SSID
+                service_content = re.sub(
+                    r'Environment=HOTSPOT_SSID=.*',
+                    f'Environment=HOTSPOT_SSID={ssid}',
+                    service_content
+                )
+                
+                # Update HOTSPOT_PASSWORD if password provided
+                if password:
+                    service_content = re.sub(
+                        r'Environment=HOTSPOT_PASSWORD=.*',
+                        f'Environment=HOTSPOT_PASSWORD={password}',
+                        service_content
+                    )
+                
+                with open(service_file, 'w') as f:
+                    f.write(service_content)
+                
+                # Reload systemd
+                subprocess.run(["systemctl", "daemon-reload"], check=True)
+            
+            # Restart hostapd to apply changes
+            subprocess.run(["systemctl", "restart", "hostapd"], check=False)
+            
+            # Restart network-manager to pick up new environment variables
+            subprocess.run(["systemctl", "restart", "network-manager.service"], check=False)
+            
+            self.send_json_response(200, {
+                "message": f"Hotspot settings updated. SSID: {ssid}"
+            })
+        except Exception as e:
+            print(f"[config-server] Error updating hotspot: {e}", flush=True)
             self.send_json_response(500, {"error": str(e)})
     
     def handle_reboot(self):

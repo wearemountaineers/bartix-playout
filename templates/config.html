@@ -231,6 +231,7 @@
         
         <div class="tabs">
             <button class="tab active" data-tab="network">Network</button>
+            <button class="tab" data-tab="hotspot">Hotspot</button>
             <button class="tab" data-tab="manifest">Manifest</button>
             <button class="tab" data-tab="volume">Volume</button>
             <button class="tab" data-tab="logs">Logs</button>
@@ -286,6 +287,24 @@
                 
                 <button type="submit">Apply Network Configuration</button>
             </form>
+        </div>
+        
+        <!-- Hotspot Configuration Tab -->
+        <div id="hotspot-tab" class="tab-content">
+            <div class="form-group">
+                <label for="hotspot_ssid">Hotspot SSID</label>
+                <input type="text" id="hotspot_ssid" placeholder="bartix-config-XXXX">
+                <small style="color: #666; font-size: 12px;">SSID for the WiFi hotspot. Include a unique number to avoid conflicts.</small>
+            </div>
+            <div class="form-group">
+                <label for="hotspot_password">Hotspot Password</label>
+                <input type="password" id="hotspot_password" placeholder="Enter password (min 8 characters)">
+                <small style="color: #666; font-size: 12px;">Password for connecting to the hotspot (WPA2, minimum 8 characters).</small>
+            </div>
+            <div class="form-group">
+                <button onclick="updateHotspot()">Update Hotspot Settings</button>
+            </div>
+            <div id="hotspot-status" class="status" style="display: none;"></div>
         </div>
         
         <!-- Manifest Configuration Tab -->
@@ -569,6 +588,42 @@
             statusEl.style.display = 'block';
         }
         
+        // Hotspot functions
+        async function updateHotspot() {
+            const ssid = document.getElementById('hotspot_ssid').value.trim();
+            const password = document.getElementById('hotspot_password').value;
+            
+            if (!ssid) {
+                showStatus('hotspot-status', 'Please enter an SSID', 'error');
+                return;
+            }
+            
+            if (password && password.length < 8) {
+                showStatus('hotspot-status', 'Password must be at least 8 characters', 'error');
+                return;
+            }
+            
+            showStatus('hotspot-status', 'Updating hotspot settings...', 'info');
+            
+            try {
+                const response = await fetch('/update-hotspot', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ssid: ssid, password: password })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showStatus('hotspot-status', '✓ Hotspot settings updated. Hotspot will restart.', 'success');
+                } else {
+                    showStatus('hotspot-status', '✗ ' + (result.error || 'Failed to update'), 'error');
+                }
+            } catch (error) {
+                showStatus('hotspot-status', 'Error: ' + error.message, 'error');
+            }
+        }
+        
         // Load initial data
         fetch('/status')
             .then(r => r.json())
@@ -579,6 +634,9 @@
                 if (data.volume !== undefined) {
                     document.getElementById('volume_slider').value = data.volume;
                     updateVolumeDisplay(data.volume);
+                }
+                if (data.hotspot_ssid) {
+                    document.getElementById('hotspot_ssid').value = data.hotspot_ssid;
                 }
             })
             .catch(() => {});

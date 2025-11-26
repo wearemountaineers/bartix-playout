@@ -59,7 +59,24 @@ sudo install -m 0644 templates/config.html /usr/local/share/bartix/templates/con
 # Configure hostapd to use our config
 # First, ensure the config file exists (copy it before configuring)
 sudo mkdir -p /etc/hostapd
-sudo install -m 0644 config/hostapd.conf /etc/hostapd/hostapd.conf
+
+# Generate unique SSID with random number (last 4 digits of MAC address or random)
+UNIQUE_ID=""
+if [ -e /sys/class/net/wlan0/address ]; then
+    MAC=$(cat /sys/class/net/wlan0/address | tr -d ':')
+    UNIQUE_ID="${MAC: -4}"
+else
+    # Fallback to random 4-digit number
+    UNIQUE_ID=$(shuf -i 1000-9999 -n 1)
+fi
+
+HOTSPOT_SSID="bartix-config-${UNIQUE_ID}"
+HOTSPOT_PASSWORD="bartix-${UNIQUE_ID}"
+
+# Create hostapd config with unique SSID
+sudo sed "s/ssid=bartix-config/ssid=${HOTSPOT_SSID}/" config/hostapd.conf | \
+sudo sed "s/wpa_passphrase=bartix-config/wpa_passphrase=${HOTSPOT_PASSWORD}/" | \
+sudo tee /etc/hostapd/hostapd.conf > /dev/null
 
 # Unmask hostapd service (it might be masked by default)
 sudo systemctl unmask hostapd 2>/dev/null || true
@@ -76,6 +93,10 @@ else
     # Create /etc/default/hostapd if it doesn't exist
     echo 'DAEMON_CONF="/etc/hostapd/hostapd.conf"' | sudo tee /etc/default/hostapd
 fi
+
+# Update network-manager.service with unique SSID and password
+sudo sed -i "s|Environment=HOTSPOT_SSID=.*|Environment=HOTSPOT_SSID=${HOTSPOT_SSID}|" /etc/systemd/system/network-manager.service
+sudo sed -i "s|Environment=HOTSPOT_PASSWORD=.*|Environment=HOTSPOT_PASSWORD=${HOTSPOT_PASSWORD}|" /etc/systemd/system/network-manager.service
 
 # Disable dnsmasq from starting automatically (we'll control it)
 sudo systemctl disable dnsmasq || true
@@ -218,7 +239,10 @@ echo "  - network-manager.service: Manages network and WiFi hotspot"
 echo "  - config-server.service: Web configuration interface"
 echo "  - stream-player.service: Audio stream player"
 echo ""
-echo "If no network is available, connect to WiFi hotspot 'bartix-config' (password: bartix-config)"
+echo "Hotspot SSID: ${HOTSPOT_SSID}"
+echo "Hotspot Password: ${HOTSPOT_PASSWORD}"
+echo ""
+echo "If no network is available, connect to WiFi hotspot '${HOTSPOT_SSID}'"
 echo "Then access http://192.168.4.1:8080 to configure network settings"
 echo ""
 echo "View logs:"
