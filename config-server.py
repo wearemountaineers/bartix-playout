@@ -314,8 +314,16 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=60  # Increased timeout for WiFi connection monitoring
             )
+            
+            # Forward network-config output to logs
+            if result.stdout:
+                for line in result.stdout.splitlines():
+                    print(f"[config-server] {line}", flush=True)
+            if result.stderr:
+                for line in result.stderr.splitlines():
+                    print(f"[config-server] {line}", flush=True)
             
             if result.returncode == 0:
                 self.send_json_response(200, {
@@ -846,6 +854,14 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
                 text=True,
                 timeout=30
             )
+            
+            # Forward network-config output to logs
+            if result.stdout:
+                for line in result.stdout.splitlines():
+                    print(f"[config-server] {line}", flush=True)
+            if result.stderr:
+                for line in result.stderr.splitlines():
+                    print(f"[config-server] {line}", flush=True)
             
             if result.returncode == 0:
                 print(f"[config-server] WiFi credentials cleared successfully", flush=True)
