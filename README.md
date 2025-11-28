@@ -34,8 +34,7 @@ Ideal for use as a **fixed playout server** (e.g., in retail, broadcast, or sign
 | `systemd/stream-player.service` | Systemd service definition for auto-start and recovery |
 | `systemd/network-manager.service` | Systemd service for network management and hotspot |
 | `systemd/config-server.service` | Systemd service for web configuration interface |
-| `config/hostapd.conf` | WiFi hotspot configuration template |
-| `config/dnsmasq-hotspot.conf` | DHCP configuration for hotspot |
+| `templates/config.html` | Web configuration form |
 | `templates/config.html` | Web configuration form |
 | `scripts/install.sh` | Installs dependencies, configures service, and enables it |
 | `scripts/test-run.sh` | Simple test script to run manually (without systemd) |
@@ -81,7 +80,7 @@ sudo bash scripts/install.sh --user admin \
 This installs:
 - `bootstream.py`, `network-manager.py`, `config-server.py`, `network-config.py` to `/usr/local/bin`
 - `stream-player.service`, `network-manager.service`, `config-server.service` to `/etc/systemd/system`
-- WiFi hotspot configuration (`hostapd`, `dnsmasq`)
+- WiFi hotspot configuration using NetworkManager
 - Web configuration interface
 - Enables and starts all services at boot
 
@@ -332,8 +331,8 @@ The system automatically:
 | Issue | Solution |
 |-------|----------|
 | Can't connect to hotspot | Check WiFi adapter is enabled: `sudo rfkill unblock wifi` |
-| Hotspot not visible/not broadcasting | Check logs: `journalctl -u network-manager.service -f`<br>Verify regulatory domain: `iw reg get`<br>Check transmit power: `iw dev wlan0_ap info \| grep txpower`<br>Set transmit power manually: `sudo iw dev wlan0_ap set txpower fixed 2000`<br>Restart hostapd: `sudo systemctl restart hostapd` |
-| Hotspot not starting | Check logs: `journalctl -u network-manager.service -f`<br>Check hostapd logs: `journalctl -u hostapd -n 50`<br>Verify virtual interface exists: `ip link show wlan0_ap`<br>Create virtual interface: `sudo iw phy phy0 interface add wlan0_ap type __ap`<br>Check if hostapd is masked: `systemctl status hostapd` |
+| Hotspot not visible/not broadcasting | Check logs: `journalctl -u network-manager.service -f`<br>Verify regulatory domain: `iw reg get`<br>Check transmit power: `iw dev wlan0_ap info \| grep txpower`<br>Set transmit power manually: `sudo iw dev wlan0_ap set txpower fixed 2000`<br>Check NetworkManager connection: `nmcli connection show Hotspot`<br>Reactivate hotspot: `nmcli connection up Hotspot` |
+| Hotspot not starting | Check logs: `journalctl -u network-manager.service -f`<br>Check NetworkManager status: `systemctl status NetworkManager`<br>Verify NetworkManager connection exists: `nmcli connection show Hotspot`<br>Check if NetworkManager is managing WiFi: `nmcli radio wifi`<br>Verify virtual interface exists: `ip link show wlan0_ap` |
 | Configuration not applying | Check network-config.py logs and verify file permissions |
 | Can't access web interface | Ensure config-server is running: `sudo systemctl status config-server.service`<br>Check if port 8080 is accessible: `curl http://192.168.4.1:8080` |
 | Can't scan for WiFi networks | When scanning for WiFi networks, the system temporarily pauses the hotspot. Use another device (phone, laptop) to scan if needed. |
@@ -344,12 +343,21 @@ The system automatically:
 
 ```bash
 # Check hotspot status
-sudo systemctl status hostapd
+sudo systemctl status NetworkManager
 sudo systemctl status network-manager.service
 
 # View detailed logs
 sudo journalctl -u network-manager.service -f
-sudo journalctl -u hostapd -n 50 --no-pager
+sudo journalctl -u NetworkManager -n 50 --no-pager
+
+# Check NetworkManager connections
+nmcli connection show
+nmcli connection show Hotspot
+nmcli connection show --active
+
+# Check device status
+nmcli device status
+nmcli device wifi list
 
 # Check interface status
 iw dev wlan0 info          # Physical interface (STA mode)
@@ -361,23 +369,20 @@ ip link show wlan0_ap
 iw reg get
 iw dev wlan0_ap info | grep txpower
 
-# Verify hotspot is broadcasting (from another device)
-# Or check hostapd_cli status
-sudo hostapd_cli -i wlan0_ap status
-sudo hostapd_cli -i wlan0_ap get_config ssid
+# Manually activate/deactivate hotspot
+nmcli connection up Hotspot
+nmcli connection down Hotspot
 
 # Manually set transmit power if needed
 sudo iw dev wlan0_ap set txpower fixed 2000
-
-# Create virtual interface if missing
-sudo iw phy phy0 interface add wlan0_ap type __ap
 ```
 
 **Important Notes:**
+- **NetworkManager**: The system uses NetworkManager for production-grade WiFi hotspot and client management. NetworkManager handles AP+STA concurrent mode automatically.
 - **Scanning**: With AP+STA concurrent support, `wlan0` is used for STA mode and can scan normally. The hotspot runs on `wlan0_ap`, so scanning doesn't interfere with the hotspot.
-- **Regulatory Domain**: The system automatically sets the regulatory domain based on `/etc/wpa_supplicant/wpa_supplicant.conf` or defaults to `NL`. This is critical for hotspot visibility.
-- **Transmit Power**: The system sets transmit power to maximum (20 dBm = 2000 mW) for best visibility. If the hotspot is not visible, manually set it: `sudo iw dev wlan0 set txpower fixed 2000`.
-- **Hotspot Verification**: The system uses `hostapd_cli` to verify the SSID is actually being broadcast. Check logs for verification status.
+- **Regulatory Domain**: The system automatically sets the regulatory domain based on system configuration or defaults to `NL`. This is critical for hotspot visibility.
+- **Transmit Power**: NetworkManager manages transmit power automatically. If the hotspot is not visible, manually set it: `sudo iw dev wlan0_ap set txpower fixed 2000`.
+- **Hotspot Management**: The hotspot connection is managed by NetworkManager. Use `nmcli connection show Hotspot` to check status and `nmcli connection up Hotspot` to activate.
 
 ## 🗑️ Uninstallation
 
@@ -394,7 +399,7 @@ This will:
 - Restore normal network operation
 
 **Options:**
-- `--remove-packages`: Also remove installed packages (hostapd, dnsmasq, etc.)
+- `--remove-packages`: Also remove installed packages (NetworkManager, etc.)
 - `--remove-user-from-audio <username>`: Remove user from audio group
 
 **Examples:**
@@ -424,4 +429,4 @@ See `LICENSE` for full terms.
 - Based on [mpv](https://mpv.io/) media player  
 - Uses standard Raspberry Pi audio stack (ALSA)
 - Built for 24/7 operation in headless setups
-- Network fallback uses `hostapd` and `dnsmasq` for WiFi hotspot
+- Network fallback uses NetworkManager for WiFi hotspot and client management

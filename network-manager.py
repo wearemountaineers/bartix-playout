@@ -2,14 +2,13 @@
 """
 Network connectivity detection and WiFi hotspot management for Raspberry Pi.
 - Detects active IP addresses and internet connectivity
-- Manages WiFi hotspot when network is unavailable
+- Manages WiFi hotspot using NetworkManager
 - Monitors network status continuously
 """
 import os
 import sys
 import time
 import signal
-import socket
 import subprocess
 import ipaddress
 import urllib.request
@@ -22,14 +21,7 @@ CONNECTIVITY_TEST_TIMEOUT = int(os.environ.get("CONNECTIVITY_TEST_TIMEOUT", "5")
 HOTSPOT_SSID = os.environ.get("HOTSPOT_SSID", "bartix-config")
 HOTSPOT_PASSWORD = os.environ.get("HOTSPOT_PASSWORD", "bartix-config")
 HOTSPOT_INTERFACE = os.environ.get("HOTSPOT_INTERFACE", "wlan0_ap")
-HOTSPOT_IP = os.environ.get("HOTSPOT_IP", "192.168.4.1")
-HOTSPOT_NETMASK = os.environ.get("HOTSPOT_NETMASK", "255.255.255.0")
-
-# Paths
-HOSTAPD_CONF = "/etc/hostapd/hostapd.conf"
-DNSMASQ_CONF = "/etc/dnsmasq.d/hotspot.conf"
-HOSTAPD_SERVICE = "hostapd"
-DNSMASQ_SERVICE = "dnsmasq"
+HOTSPOT_CONNECTION_NAME = "Hotspot"
 
 # Track if regulatory domain has been set (to avoid setting it repeatedly)
 _regulatory_domain_set = False
@@ -152,51 +144,57 @@ def wait_for_network(timeout=NETWORK_WAIT_TIMEOUT, check_internet=True):
     return final_status
 
 
+def nmcli_run(cmd, check=True, capture_output=True):
+    """Run nmcli command and return result."""
+    full_cmd = ["nmcli"] + cmd
+    result = subprocess.run(
+        full_cmd,
+        capture_output=capture_output,
+        text=True,
+        check=False
+    )
+    if check and result.returncode != 0:
+        print(f"[network-manager] nmcli command failed: {' '.join(full_cmd)}", flush=True)
+        if result.stderr:
+            print(f"[network-manager] Error: {result.stderr}", flush=True)
+    return result
+
+
 def is_hotspot_running():
-    """Check if WiFi hotspot is currently running."""
+    """Check if WiFi hotspot is currently running via NetworkManager."""
     try:
-        # Check if hostapd is running
-        result = subprocess.run(
-            ["systemctl", "is-active", "--quiet", HOSTAPD_SERVICE],
-            check=False
-        )
+        # Check if NetworkManager connection exists and is active
+        result = nmcli_run(["connection", "show", HOTSPOT_CONNECTION_NAME], check=False)
+        if result.returncode != 0:
+            return False
+        
+        # Check if connection is active
+        result = nmcli_run(["connection", "show", "--active", HOTSPOT_CONNECTION_NAME], check=False)
         if result.returncode == 0:
-            # Also verify interface is actually in AP mode
+            # Verify interface is actually in AP mode
             result = subprocess.run(
                 ["iw", "dev", HOTSPOT_INTERFACE, "info"],
                 capture_output=True,
                 text=True,
                 check=False
             )
-            if "type AP" in result.stdout:
-                # Also check if dnsmasq is running (required for DHCP)
-                dnsmasq_result = subprocess.run(
-                    ["systemctl", "is-active", "--quiet", DNSMASQ_SERVICE],
-                    check=False
-                )
-                if dnsmasq_result.returncode == 0:
-                    return True
-                else:
-                    print(f"[network-manager] Warning: dnsmasq is not running (DHCP will not work)", flush=True)
-                    return False
-    except Exception:
-        pass
+            if result.returncode == 0 and "type AP" in result.stdout:
+                return True
+    except Exception as e:
+        print(f"[network-manager] Error checking hotspot status: {e}", flush=True)
     return False
 
 
 def verify_hotspot_broadcasting():
-    """Verify that hotspot is actually broadcasting (not just running)."""
+    """Verify that hotspot is actually broadcasting (not just configured)."""
     try:
-        # Check if hostapd service is active first
-        result = subprocess.run(
-            ["systemctl", "is-active", "--quiet", HOSTAPD_SERVICE],
-            check=False
-        )
+        # Check if NetworkManager connection is active
+        result = nmcli_run(["connection", "show", "--active", HOTSPOT_CONNECTION_NAME], check=False)
         if result.returncode != 0:
-            print(f"[network-manager] hostapd service is not active", flush=True)
+            print(f"[network-manager] Hotspot connection is not active", flush=True)
             return False
         
-        # Check if interface is up and in AP mode
+        # Check if interface exists and is in AP mode
         result = subprocess.run(
             ["iw", "dev", HOTSPOT_INTERFACE, "info"],
             capture_output=True,
@@ -209,7 +207,6 @@ def verify_hotspot_broadcasting():
         
         if "type AP" not in result.stdout:
             print(f"[network-manager] Interface {HOTSPOT_INTERFACE} is not in AP mode", flush=True)
-            print(f"[network-manager] Interface info: {result.stdout}", flush=True)
             return False
         
         # Check if interface is UP
@@ -223,66 +220,23 @@ def verify_hotspot_broadcasting():
             print(f"[network-manager] Interface {HOTSPOT_INTERFACE} is not UP", flush=True)
             return False
         
-        # Check transmit power (should be set to max) - use 'info' command instead of 'get txpower'
+        # Check transmit power
         result = subprocess.run(
             ["iw", "dev", HOTSPOT_INTERFACE, "info"],
             capture_output=True,
             text=True,
             check=False
         )
-        # If txpower is very low or not set, hotspot might not be visible
         if result.returncode == 0 and result.stdout:
             try:
-                # Extract dBm value from info output (format: "txpower 20.00 dBm" or similar)
                 import re
                 match = re.search(r'txpower\s+(\d+(?:\.\d+)?)\s*dBm', result.stdout, re.IGNORECASE)
                 if match:
                     txpower = float(match.group(1))
-                    if txpower < 10:  # Very low power, might not be visible
-                        print(f"[network-manager] Warning: Transmit power is low ({txpower} dBm), setting to maximum", flush=True)
-                        subprocess.run(
-                            ["iw", "dev", HOTSPOT_INTERFACE, "set", "txpower", "fixed", "2000"],
-                            check=False,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL
-                        )
-                else:
-                    print(f"[network-manager] Warning: Could not parse transmit power from interface info", flush=True)
-            except Exception as e:
-                print(f"[network-manager] Warning: Error checking transmit power: {e}", flush=True)
-        
-        # Verify with hostapd_cli that SSID is actually being broadcast
-        # Note: hostapd_cli requires control interface to be configured in hostapd.conf
-        # If control interface is not configured, this check will fail but that's OK
-        result = subprocess.run(
-            ["hostapd_cli", "-i", HOTSPOT_INTERFACE, "status"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=3
-        )
-        if result.returncode == 0:
-            status_output = result.stdout
-            # Check if SSID is in the status
-            if HOTSPOT_SSID in status_output or "state=ENABLED" in status_output:
-                print(f"[network-manager] hostapd_cli confirms hotspot is enabled", flush=True)
-            else:
-                print(f"[network-manager] Warning: hostapd_cli status doesn't show expected state", flush=True)
-                print(f"[network-manager] hostapd_cli output: {status_output}", flush=True)
-        else:
-            # hostapd_cli failure is not critical - it might be a config issue or timing
-            # The important checks (interface in AP mode, hostapd service active) already passed
-            if "No such file or directory" in result.stderr or "Failed to connect" in result.stderr:
-                print(f"[network-manager] Note: hostapd_cli cannot connect (control interface may not be configured)", flush=True)
-                print(f"[network-manager] This is not critical - hotspot may still be working. Check interface status above.", flush=True)
-            else:
-                print(f"[network-manager] Warning: hostapd_cli check failed (return code {result.returncode})", flush=True)
-                print(f"[network-manager] hostapd_cli error: {result.stderr}", flush=True)
-        
-        # Regulatory domain check removed from verification function
-        # Setting regulatory domain repeatedly interferes with WiFi client setup
-        # It should only be set during hotspot startup, not during verification
-        # The regulatory domain is set in start_hotspot() and main_loop() initialization
+                    if txpower < 10:
+                        print(f"[network-manager] Warning: Transmit power is low ({txpower} dBm)", flush=True)
+            except Exception:
+                pass
         
         return True
     except Exception as e:
@@ -293,28 +247,15 @@ def verify_hotspot_broadcasting():
 
 
 def stop_hotspot():
-    """Stop WiFi hotspot."""
+    """Stop WiFi hotspot by deactivating NetworkManager connection."""
     try:
-        subprocess.run(
-            ["systemctl", "stop", HOSTAPD_SERVICE],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        subprocess.run(
-            ["systemctl", "stop", DNSMASQ_SERVICE],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        # Bring down interface
-        subprocess.run(
-            ["ip", "link", "set", HOTSPOT_INTERFACE, "down"],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        print(f"[network-manager] Hotspot stopped", flush=True)
+        # Deactivate the hotspot connection
+        result = nmcli_run(["connection", "down", HOTSPOT_CONNECTION_NAME], check=False)
+        if result.returncode == 0:
+            print(f"[network-manager] Hotspot stopped", flush=True)
+        else:
+            # Connection might not exist or already be down
+            print(f"[network-manager] Hotspot connection not active or doesn't exist", flush=True)
         return True
     except Exception as e:
         print(f"[network-manager] Error stopping hotspot: {e}", flush=True)
@@ -322,36 +263,9 @@ def stop_hotspot():
 
 
 def start_hotspot():
-    """Start WiFi hotspot."""
+    """Start WiFi hotspot using NetworkManager."""
     try:
-        # Check if interface exists, create it if it's the virtual AP interface
-        result = subprocess.run(
-            ["ip", "link", "show", HOTSPOT_INTERFACE],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        if result.returncode != 0:
-            if HOTSPOT_INTERFACE == "wlan0_ap":
-                # Try to create the virtual AP interface
-                print(f"[network-manager] Virtual AP interface {HOTSPOT_INTERFACE} not found, creating...", flush=True)
-                if not create_virtual_ap_interface(HOTSPOT_INTERFACE):
-                    print(f"[network-manager] Error: Could not create virtual AP interface {HOTSPOT_INTERFACE}", flush=True)
-                    return False
-            else:
-                print(f"[network-manager] Error: Interface {HOTSPOT_INTERFACE} not found", flush=True)
-                return False
-        
-        # With AP+STA concurrent support, wlan0_ap is a virtual interface dedicated to AP mode
-        # wlan0 can be in managed mode (STA) while wlan0_ap is in AP mode - they don't conflict
-        # No need to check for managed mode on the hotspot interface
-        
-        # Check if interface supports AP mode
-        if not check_interface_supports_ap_mode(HOTSPOT_INTERFACE):
-            print(f"[network-manager] Warning: Interface {HOTSPOT_INTERFACE} may not support AP mode", flush=True)
-            # Continue anyway, hostapd will fail with a clearer error if not supported
-        
-        # Unblock WiFi if blocked (common on Raspberry Pi)
+        # Unblock WiFi if blocked
         print(f"[network-manager] Unblocking WiFi...", flush=True)
         subprocess.run(
             ["rfkill", "unblock", "wifi"],
@@ -361,110 +275,40 @@ def start_hotspot():
         )
         time.sleep(1)
         
-        # With AP+STA concurrent support, wpa_supplicant (on wlan0) and hostapd (on wlan0_ap) don't conflict
-        # No need to stop wpa_supplicant
+        # Check if connection already exists
+        result = nmcli_run(["connection", "show", HOTSPOT_CONNECTION_NAME], check=False)
+        connection_exists = (result.returncode == 0)
         
-        # CRITICAL: Add denyinterfaces wlan0_ap to dhcpcd.conf
-        # This prevents dhcpcd from managing the virtual AP interface (we set static IP for hotspot)
-        # Note: wlan0 should NOT be denied - it's used for STA mode and needs dhcpcd
-        print(f"[network-manager] Preventing dhcpcd from managing {HOTSPOT_INTERFACE}...", flush=True)
-        dhcpcd_conf = "/etc/dhcpcd.conf"
-        if os.path.exists(dhcpcd_conf):
-            with open(dhcpcd_conf, 'r') as f:
-                dhcpcd_lines = f.readlines()
+        if not connection_exists:
+            print(f"[network-manager] Creating hotspot connection '{HOTSPOT_CONNECTION_NAME}'...", flush=True)
+            # Create hotspot connection
+            # NetworkManager will automatically create wlan0_ap interface if needed
+            result = nmcli_run([
+                "connection", "add",
+                "type", "wifi",
+                "ifname", HOTSPOT_INTERFACE,
+                "con-name", HOTSPOT_CONNECTION_NAME,
+                "autoconnect", "yes",
+                "ssid", HOTSPOT_SSID,
+                "mode", "ap",
+                "wifi-sec.key-mgmt", "wpa-psk",
+                "wifi-sec.psk", HOTSPOT_PASSWORD,
+                "ipv4.method", "shared"
+            ])
             
-            # Check if denyinterfaces wlan0_ap already exists
-            has_deny = False
-            for line in dhcpcd_lines:
-                if f"denyinterfaces {HOTSPOT_INTERFACE}" in line.strip():
-                    has_deny = True
-                    break
-            
-            if not has_deny:
-                # Add denyinterfaces wlan0_ap
-                with open(dhcpcd_conf, 'a') as f:
-                    f.write(f"denyinterfaces {HOTSPOT_INTERFACE}\n")
-                print(f"[network-manager] Added 'denyinterfaces {HOTSPOT_INTERFACE}' to dhcpcd.conf", flush=True)
-                
-                # Restart dhcpcd to apply the change
-                subprocess.run(
-                    ["systemctl", "restart", "dhcpcd"],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-                time.sleep(1)
-            else:
-                print(f"[network-manager] 'denyinterfaces {HOTSPOT_INTERFACE}' already in dhcpcd.conf", flush=True)
+            if result.returncode != 0:
+                print(f"[network-manager] Error creating hotspot connection: {result.stderr}", flush=True)
+                return False
+            print(f"[network-manager] Hotspot connection created", flush=True)
+        else:
+            # Update connection if SSID or password changed
+            print(f"[network-manager] Hotspot connection exists, updating if needed...", flush=True)
+            nmcli_run(["connection", "modify", HOTSPOT_CONNECTION_NAME, "ssid", HOTSPOT_SSID], check=False)
+            nmcli_run(["connection", "modify", HOTSPOT_CONNECTION_NAME, "wifi-sec.psk", HOTSPOT_PASSWORD], check=False)
         
-        # Unmask hostapd if it's masked (required before starting)
-        subprocess.run(
-            ["systemctl", "unmask", HOSTAPD_SERVICE],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        
-        # Stop hostapd if it's already running (clean start)
-        subprocess.run(
-            ["systemctl", "stop", HOSTAPD_SERVICE],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        time.sleep(1)
-        
-        # Stop dnsmasq if running
-        subprocess.run(
-            ["systemctl", "stop", DNSMASQ_SERVICE],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        time.sleep(1)
-        
-        # Ensure interface is down first
-        print(f"[network-manager] Configuring interface {HOTSPOT_INTERFACE}...", flush=True)
-        subprocess.run(
-            ["ip", "link", "set", HOTSPOT_INTERFACE, "down"],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        time.sleep(1)
-        
-        # Configure interface with static IP
-        subprocess.run(
-            ["ip", "addr", "flush", "dev", HOTSPOT_INTERFACE],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        result = subprocess.run(
-            ["ip", "addr", "add", f"{HOTSPOT_IP}/{HOTSPOT_NETMASK}", "dev", HOTSPOT_INTERFACE],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        if result.returncode != 0:
-            print(f"[network-manager] Warning: Failed to set IP: {result.stderr}", flush=True)
-        
-        result = subprocess.run(
-            ["ip", "link", "set", HOTSPOT_INTERFACE, "up"],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        if result.returncode != 0:
-            print(f"[network-manager] Error bringing interface up: {result.stderr}", flush=True)
-            return False
-        
-        # Regulatory domain should only be set once during initialization
-        # Setting it repeatedly interferes with WiFi client connections
-        # It's set in main_loop() initialization, so skip here to avoid interference
+        # Set regulatory domain if needed (only once)
         global _regulatory_domain_set
         if not _regulatory_domain_set:
-            # Only set if completely unset (first time only)
             reg_result = subprocess.run(
                 ["iw", "reg", "get"],
                 capture_output=True,
@@ -472,9 +316,11 @@ def start_hotspot():
                 check=False
             )
             if reg_result.returncode == 0 and ("country 99" in reg_result.stdout or "DFS-UNSET" in reg_result.stdout):
-                # Try to get country from wpa_supplicant.conf
                 country_code = "NL"  # default
                 try:
+                    # Try to get country from NetworkManager or system
+                    nm_result = nmcli_run(["general", "permissions"], check=False)
+                    # Or check /etc/default/crda or similar
                     if os.path.exists("/etc/wpa_supplicant/wpa_supplicant.conf"):
                         with open("/etc/wpa_supplicant/wpa_supplicant.conf", "r") as f:
                             for line in f:
@@ -484,7 +330,7 @@ def start_hotspot():
                 except Exception:
                     pass
                 
-                print(f"[network-manager] Setting WiFi country code to {country_code} (first time only)...", flush=True)
+                print(f"[network-manager] Setting WiFi country code to {country_code}...", flush=True)
                 subprocess.run(
                     ["iw", "reg", "set", country_code],
                     check=False,
@@ -494,184 +340,29 @@ def start_hotspot():
                 _regulatory_domain_set = True
                 time.sleep(1)
         
-        # Set maximum transmit power (20 dBm = 2000 mW) for better visibility
-        print(f"[network-manager] Setting maximum transmit power...", flush=True)
-        subprocess.run(
-            ["iw", "dev", HOTSPOT_INTERFACE, "set", "txpower", "fixed", "2000"],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
+        # Activate the hotspot connection
+        print(f"[network-manager] Activating hotspot connection...", flush=True)
+        result = nmcli_run(["connection", "up", HOTSPOT_CONNECTION_NAME])
         
-        # Set transmit power again after bringing interface up (ensures it's set)
-        time.sleep(1)
-        print(f"[network-manager] Setting maximum transmit power (retry)...", flush=True)
-        result = subprocess.run(
-            ["iw", "dev", HOTSPOT_INTERFACE, "set", "txpower", "fixed", "2000"],
-            capture_output=True,
-            text=True,
-            check=False
-        )
         if result.returncode != 0:
-            print(f"[network-manager] Warning: Failed to set txpower: {result.stderr}", flush=True)
-        else:
-            # Verify it was set by checking interface info
-            check_result = subprocess.run(
-                ["iw", "dev", HOTSPOT_INTERFACE, "info"],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            if check_result.returncode == 0:
-                import re
-                match = re.search(r'txpower\s+(\d+(?:\.\d+)?)\s*dBm', check_result.stdout, re.IGNORECASE)
-                if match:
-                    txpower = match.group(1)
-                    print(f"[network-manager] Transmit power verified: {txpower} dBm", flush=True)
-                else:
-                    print(f"[network-manager] Warning: Could not verify transmit power in interface info", flush=True)
-                    print(f"[network-manager] Interface info: {check_result.stdout}", flush=True)
-        
-        time.sleep(2)
-        
-        # Start dnsmasq
-        print(f"[network-manager] Starting dnsmasq...", flush=True)
-        result = subprocess.run(
-            ["systemctl", "start", DNSMASQ_SERVICE],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        if result.returncode != 0:
-            print(f"[network-manager] Error starting dnsmasq: {result.stderr}", flush=True)
-            # Try to get more details from journalctl
-            journal_result = subprocess.run(
-                ["journalctl", "-u", DNSMASQ_SERVICE, "-n", "10", "--no-pager"],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            if journal_result.returncode == 0:
-                print(f"[network-manager] dnsmasq logs:\n{journal_result.stdout}", flush=True)
-        else:
-            # Verify dnsmasq is actually running
-            time.sleep(1)
-            verify_result = subprocess.run(
-                ["systemctl", "is-active", "--quiet", DNSMASQ_SERVICE],
-                check=False
-            )
-            if verify_result.returncode == 0:
-                print(f"[network-manager] dnsmasq started successfully", flush=True)
-            else:
-                print(f"[network-manager] Warning: dnsmasq start command succeeded but service is not active", flush=True)
-                # Try to get status
-                status_result = subprocess.run(
-                    ["systemctl", "status", DNSMASQ_SERVICE, "--no-pager", "-n", "10"],
-                    capture_output=True,
-                    text=True,
-                    check=False
-                )
-                if status_result.returncode == 0:
-                    print(f"[network-manager] dnsmasq status:\n{status_result.stdout}", flush=True)
-        
-        time.sleep(1)
-        
-        # Start hostapd
-        print(f"[network-manager] Starting hostapd...", flush=True)
-        result = subprocess.run(
-            ["systemctl", "start", HOSTAPD_SERVICE],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        if result.returncode != 0:
-            error_msg = result.stderr or "Unknown error"
-            print(f"[network-manager] Error starting hostapd: {error_msg}", flush=True)
-            # Try to get more details from journalctl
-            journal_result = subprocess.run(
-                ["journalctl", "-u", HOSTAPD_SERVICE, "-n", "10", "--no-pager"],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            if journal_result.returncode == 0:
-                print(f"[network-manager] hostapd logs:\n{journal_result.stdout}", flush=True)
+            print(f"[network-manager] Error activating hotspot: {result.stderr}", flush=True)
             return False
         
-        # After hostapd starts, verify dnsmasq is still running and restart if needed
-        # This is important because dnsmasq might fail to bind if started before interface is ready
-        time.sleep(2)
-        dnsmasq_check = subprocess.run(
-            ["systemctl", "is-active", "--quiet", DNSMASQ_SERVICE],
-            check=False
-        )
-        if dnsmasq_check.returncode != 0:
-            print(f"[network-manager] dnsmasq not running after hostapd start, restarting...", flush=True)
-            restart_result = subprocess.run(
-                ["systemctl", "restart", DNSMASQ_SERVICE],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            time.sleep(1)
-            # Verify again
-            dnsmasq_check2 = subprocess.run(
-                ["systemctl", "is-active", "--quiet", DNSMASQ_SERVICE],
-                check=False
-            )
-            if dnsmasq_check2.returncode == 0:
-                print(f"[network-manager] dnsmasq restarted successfully", flush=True)
-            else:
-                print(f"[network-manager] Error: dnsmasq failed to start after restart", flush=True)
-                if restart_result.stderr:
-                    print(f"[network-manager] dnsmasq restart error: {restart_result.stderr}", flush=True)
-                # Get dnsmasq logs for debugging
-                journal_result = subprocess.run(
-                    ["journalctl", "-u", DNSMASQ_SERVICE, "-n", "20", "--no-pager"],
-                    capture_output=True,
-                    text=True,
-                    check=False
-                )
-                if journal_result.returncode == 0:
-                    print(f"[network-manager] dnsmasq logs:\n{journal_result.stdout}", flush=True)
+        # Wait a bit for connection to establish
+        time.sleep(3)
         
-        time.sleep(4)  # Give hostapd more time to initialize
-        
-        # Set transmit power one more time after hostapd starts (sometimes it gets reset)
-        print(f"[network-manager] Re-setting transmit power after hostapd start...", flush=True)
-        subprocess.run(
-            ["iw", "dev", HOTSPOT_INTERFACE, "set", "txpower", "fixed", "2000"],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        time.sleep(2)
-        
-        # Check hostapd logs for any errors
-        journal_result = subprocess.run(
-            ["journalctl", "-u", HOSTAPD_SERVICE, "-n", "20", "--no-pager"],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        if journal_result.returncode == 0:
-            if "error" in journal_result.stdout.lower() or "failed" in journal_result.stdout.lower():
-                print(f"[network-manager] Warning: hostapd logs show errors:", flush=True)
-                print(f"{journal_result.stdout}", flush=True)
-            else:
-                print(f"[network-manager] hostapd logs look good", flush=True)
-        
-        # Verify hotspot is actually broadcasting
+        # Verify hotspot is broadcasting
         print(f"[network-manager] Verifying hotspot is broadcasting...", flush=True)
         if verify_hotspot_broadcasting():
-            # Double-check by verifying transmit power is set
+            print(f"[network-manager] Hotspot '{HOTSPOT_SSID}' started and broadcasting on {HOTSPOT_INTERFACE}", flush=True)
+            
+            # Check transmit power
             result = subprocess.run(
                 ["iw", "dev", HOTSPOT_INTERFACE, "info"],
                 capture_output=True,
                 text=True,
                 check=False
             )
-            print(f"[network-manager] Hotspot '{HOTSPOT_SSID}' started and broadcasting on {HOTSPOT_INTERFACE}", flush=True)
             if result.returncode == 0 and result.stdout:
                 import re
                 match = re.search(r'txpower\s+(\d+(?:\.\d+)?)\s*dBm', result.stdout, re.IGNORECASE)
@@ -679,84 +370,11 @@ def start_hotspot():
                     txpower = match.group(1)
                     print(f"[network-manager] Transmit power: {txpower} dBm", flush=True)
             
-            # Additional verification: check hostapd status and SSID
-            result = subprocess.run(
-                ["hostapd_cli", "-i", HOTSPOT_INTERFACE, "status"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=3
-            )
-            if result.returncode == 0:
-                print(f"[network-manager] hostapd status: {result.stdout.strip()}", flush=True)
-                # Try to get the SSID from hostapd
-                # Note: hostapd_cli get_config ssid returns multiple lines like:
-                # bssid=b8:27:eb:45:48:9a
-                # ssid=bartix-config-489a
-                # wps_state=disabled
-                # ...
-                ssid_result = subprocess.run(
-                    ["hostapd_cli", "-i", HOTSPOT_INTERFACE, "get_config", "ssid"],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=2
-                )
-                if ssid_result.returncode == 0:
-                    # Parse the output - extract SSID from the multi-line response
-                    actual_ssid = None
-                    for line in ssid_result.stdout.strip().split('\n'):
-                        line = line.strip()
-                        if line.startswith('ssid='):
-                            actual_ssid = line.split('=', 1)[1].strip()
-                            break
-                    
-                    if actual_ssid:
-                        print(f"[network-manager] Hotspot SSID verified: {actual_ssid}", flush=True)
-                        if actual_ssid != HOTSPOT_SSID:
-                            print(f"[network-manager] Warning: SSID mismatch! Expected '{HOTSPOT_SSID}', got '{actual_ssid}'", flush=True)
-                    else:
-                        print(f"[network-manager] Note: Could not parse SSID from hostapd_cli output", flush=True)
-                        print(f"[network-manager] hostapd_cli output: {ssid_result.stdout[:200]}", flush=True)
-            else:
-                print(f"[network-manager] Warning: Could not get hostapd_cli status (return code {result.returncode})", flush=True)
-                print(f"[network-manager] hostapd_cli error: {result.stderr}", flush=True)
-            
             return True
         else:
-            print(f"[network-manager] Warning: hostapd started but hotspot not broadcasting. Attempting restart...", flush=True)
-            # Try restarting hostapd once
-            subprocess.run(
-                ["systemctl", "restart", HOSTAPD_SERVICE],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            time.sleep(3)
+            print(f"[network-manager] Warning: Hotspot connection activated but not broadcasting", flush=True)
+            return False
             
-            # Re-verify transmit power
-            subprocess.run(
-                ["iw", "dev", HOTSPOT_INTERFACE, "set", "txpower", "fixed", "2000"],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            time.sleep(1)
-            
-            if verify_hotspot_broadcasting():
-                print(f"[network-manager] Hotspot '{HOTSPOT_SSID}' started after restart", flush=True)
-                return True
-            else:
-                print(f"[network-manager] Failed to start hotspot - service started but not broadcasting", flush=True)
-                # Try to get more diagnostic info
-                result = subprocess.run(
-                    ["iw", "dev", HOTSPOT_INTERFACE, "info"],
-                    capture_output=True,
-                    text=True,
-                    check=False
-                )
-                print(f"[network-manager] Interface info: {result.stdout}", flush=True)
-                return False
     except Exception as e:
         print(f"[network-manager] Error starting hotspot: {e}", flush=True)
         import traceback
@@ -764,128 +382,31 @@ def start_hotspot():
         return False
 
 
-def create_virtual_ap_interface(interface_name="wlan0_ap", phy="phy0"):
-    """
-    Create a virtual AP interface for concurrent AP+STA operation.
-    
-    Args:
-        interface_name: Name of the virtual interface to create (default: wlan0_ap)
-        phy: Physical device name (default: phy0)
-    
-    Returns:
-        bool: True if interface exists or was created successfully
-    """
-    try:
-        # Check if interface already exists
-        result = subprocess.run(
-            ["ip", "link", "show", interface_name],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        if result.returncode == 0:
-            print(f"[network-manager] Virtual AP interface {interface_name} already exists", flush=True)
-            return True
-        
-        # Check if phy device exists
-        result = subprocess.run(
-            ["iw", "phy", phy, "info"],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        if result.returncode != 0:
-            print(f"[network-manager] Error: Physical device {phy} not found", flush=True)
-            return False
-        
-        # Create virtual AP interface
-        print(f"[network-manager] Creating virtual AP interface {interface_name} on {phy}...", flush=True)
-        result = subprocess.run(
-            ["iw", "phy", phy, "interface", "add", interface_name, "type", "__ap"],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        
-        if result.returncode != 0:
-            error_msg = result.stderr or result.stdout or "Unknown error"
-            print(f"[network-manager] Error creating virtual AP interface: {error_msg}", flush=True)
-            return False
-        
-        # Wait a moment for interface to appear
-        time.sleep(1)
-        
-        # Verify interface was created
-        result = subprocess.run(
-            ["ip", "link", "show", interface_name],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        if result.returncode == 0:
-            print(f"[network-manager] Virtual AP interface {interface_name} created successfully", flush=True)
-            return True
-        else:
-            print(f"[network-manager] Warning: Interface {interface_name} not found after creation", flush=True)
-            return False
-    
-    except Exception as e:
-        print(f"[network-manager] Error creating virtual AP interface: {e}", flush=True)
-        import traceback
-        print(f"[network-manager] Traceback: {traceback.format_exc()}", flush=True)
-        return False
-
-
-def check_interface_supports_ap_mode(interface):
-    """Check if WiFi interface supports AP (access point) mode."""
-    try:
-        result = subprocess.run(
-            ["iw", "dev", interface, "info"],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        if result.returncode != 0:
-            print(f"[network-manager] Interface {interface} not found or not a WiFi device", flush=True)
-            return False
-        
-        # Check if interface supports AP mode
-        result = subprocess.run(
-            ["iw", "phy", "phy0", "info"],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        if "AP" in result.stdout or "* AP" in result.stdout:
-            return True
-        
-        # Alternative check: try to set interface type
-        result = subprocess.run(
-            ["iw", "dev", interface, "set", "type", "ap"],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        return result.returncode == 0
-    except Exception as e:
-        print(f"[network-manager] Error checking AP mode support: {e}", flush=True)
-        return False
-
-
 def ensure_hotspot_config():
     """
-    Ensure hostapd and dnsmasq configuration files exist.
-    Returns True if configs are ready.
+    Ensure NetworkManager is running and ready.
+    Returns True if NetworkManager is ready.
     """
-    # This will be called by install script to create configs
-    # For now, just check if they exist
-    if not os.path.exists(HOSTAPD_CONF):
-        print(f"[network-manager] hostapd config not found: {HOSTAPD_CONF}", flush=True)
+    try:
+        # Check if NetworkManager is running
+        result = subprocess.run(
+            ["systemctl", "is-active", "--quiet", "NetworkManager"],
+            check=False
+        )
+        if result.returncode != 0:
+            print(f"[network-manager] NetworkManager service is not active", flush=True)
+            return False
+        
+        # Check if nmcli is available
+        result = nmcli_run(["general", "status"], check=False)
+        if result.returncode != 0:
+            print(f"[network-manager] NetworkManager is not responding", flush=True)
+            return False
+        
+        return True
+    except Exception as e:
+        print(f"[network-manager] Error checking NetworkManager: {e}", flush=True)
         return False
-    if not os.path.exists(DNSMASQ_CONF):
-        print(f"[network-manager] dnsmasq config not found: {DNSMASQ_CONF}", flush=True)
-        return False
-    return True
 
 
 def main_loop():
@@ -905,42 +426,15 @@ def main_loop():
     
     print("[network-manager] Starting network manager...", flush=True)
     
-    # Ensure wpa_supplicant is enabled and started if WiFi credentials exist
-    wpa_supplicant_conf = "/etc/wpa_supplicant/wpa_supplicant.conf"
-    if os.path.exists(wpa_supplicant_conf):
-        # Check if there's a network block (not just country code)
-        has_network = False
-        try:
-            with open(wpa_supplicant_conf, 'r') as f:
-                content = f.read()
-                if "network=" in content or "ssid=" in content:
-                    has_network = True
-        except Exception:
-            pass
-        
-        if has_network:
-            print("[network-manager] WiFi credentials found, ensuring wpa_supplicant is enabled and started...", flush=True)
-            # Enable wpa_supplicant if not already enabled
-            subprocess.run(
-                ["systemctl", "enable", "wpa_supplicant"],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            # Start wpa_supplicant if not running
-            result = subprocess.run(
-                ["systemctl", "is-active", "wpa_supplicant"],
-                check=False
-            )
-            if result.returncode != 0:
-                print("[network-manager] Starting wpa_supplicant...", flush=True)
-                subprocess.run(
-                    ["systemctl", "start", "wpa_supplicant"],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-                time.sleep(2)  # Give wpa_supplicant time to start
+    # Wait for NetworkManager to be ready
+    print("[network-manager] Waiting for NetworkManager to be ready...", flush=True)
+    for i in range(30):
+        if ensure_hotspot_config():
+            print("[network-manager] NetworkManager is ready", flush=True)
+            break
+        time.sleep(1)
+    else:
+        print("[network-manager] Warning: NetworkManager not ready after 30s, continuing anyway", flush=True)
     
     # Wait for physical WiFi interface (wlan0) to be available
     print("[network-manager] Waiting for physical WiFi interface (wlan0) to be available...", flush=True)
@@ -967,17 +461,7 @@ def main_loop():
         print(f"[network-manager] Warning: Physical WiFi interface wlan0 not found after {interface_wait_timeout}s", flush=True)
         print("[network-manager] Will continue and retry in monitor loop", flush=True)
     
-    # Create virtual AP interface if it doesn't exist
-    if HOTSPOT_INTERFACE == "wlan0_ap":
-        print(f"[network-manager] Ensuring virtual AP interface {HOTSPOT_INTERFACE} exists...", flush=True)
-        if not create_virtual_ap_interface(HOTSPOT_INTERFACE):
-            print(f"[network-manager] Warning: Could not create virtual AP interface {HOTSPOT_INTERFACE}", flush=True)
-            print("[network-manager] Will continue and retry in monitor loop", flush=True)
-        else:
-            print(f"[network-manager] Virtual AP interface {HOTSPOT_INTERFACE} is ready", flush=True)
-    
     # Set WiFi country code if not set (required for AP mode)
-    # This must be done early and persistently
     try:
         result = subprocess.run(
             ["iw", "reg", "get"],
@@ -987,7 +471,6 @@ def main_loop():
         )
         if result.returncode == 0:
             if "country 99" in result.stdout or "DFS-UNSET" in result.stdout:
-                # Try to get country from wpa_supplicant.conf
                 country_code = "NL"  # default
                 try:
                     if os.path.exists("/etc/wpa_supplicant/wpa_supplicant.conf"):
@@ -1000,53 +483,15 @@ def main_loop():
                     pass
                 
                 print(f"[network-manager] Setting WiFi country code to {country_code}...", flush=True)
-                # Set regulatory domain (global)
-                set_result = subprocess.run(
+                subprocess.run(
                     ["iw", "reg", "set", country_code],
-                    capture_output=True,
-                    text=True,
-                    check=False
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
                 )
-                if set_result.returncode != 0:
-                    print(f"[network-manager] Error setting country code: {set_result.stderr}", flush=True)
-                else:
-                    time.sleep(2)
-                    # Verify it was set
-                    verify_result = subprocess.run(
-                        ["iw", "reg", "get"],
-                        capture_output=True,
-                        text=True,
-                        check=False
-                    )
-                    if verify_result.returncode == 0:
-                        # Check both global and phy level
-                        if country_code.lower() in verify_result.stdout.lower() and "phy#0 country 99" not in verify_result.stdout:
-                            print(f"[network-manager] Regulatory domain successfully set to {country_code}", flush=True)
-                            global _regulatory_domain_set
-                            _regulatory_domain_set = True
-                        else:
-                            print(f"[network-manager] Warning: Regulatory domain may not be set correctly at phy level", flush=True)
-                            print(f"[network-manager] Current reg output: {verify_result.stdout}", flush=True)
-                            # Try setting it again with interface reset (sometimes needed for phy-level update)
-                            print(f"[network-manager] Attempting to set regulatory domain with interface reset...", flush=True)
-                            # Bring interface down temporarily to force phy-level update
-                            subprocess.run(
-                                ["ip", "link", "set", HOTSPOT_INTERFACE, "down"],
-                                check=False,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL
-                            )
-                            time.sleep(1)
-                            subprocess.run(
-                                ["iw", "reg", "set", country_code],
-                                check=False,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL
-                            )
-                            time.sleep(1)
-                            # Interface will be brought up later in the function
-                            print(f"[network-manager] Note: phy#0 may still show country 99 due to driver limitations", flush=True)
-                            print(f"[network-manager] This is often a firmware/driver issue but hotspot may still work", flush=True)
+                global _regulatory_domain_set
+                _regulatory_domain_set = True
+                time.sleep(2)
     except Exception as e:
         print(f"[network-manager] Warning: Could not set country code: {e}", flush=True)
     
@@ -1081,7 +526,7 @@ def main_loop():
             else:
                 print(f"[network-manager] Failed to start hotspot, retry {attempt + 1}/{max_retries}...", flush=True)
         else:
-            print("[network-manager] Warning: Hotspot config files not found. Run install script.", flush=True)
+            print("[network-manager] Warning: NetworkManager not ready. Run install script.", flush=True)
             break
         
         if attempt < max_retries - 1:
@@ -1101,21 +546,7 @@ def main_loop():
                 has_ip, has_internet = has_network_connectivity()
                 
                 # Ensure hotspot is running and broadcasting (always available requirement)
-                # With AP+STA concurrent support, hotspot (wlan0_ap) and WiFi client (wlan0) can run simultaneously
-                # No need to check if wlan0 is in managed mode - they use different interfaces
-                
-                # Ensure virtual AP interface exists
-                if HOTSPOT_INTERFACE == "wlan0_ap":
-                    result = subprocess.run(
-                        ["ip", "link", "show", HOTSPOT_INTERFACE],
-                        capture_output=True,
-                        text=True,
-                        check=False
-                    )
-                    if result.returncode != 0:
-                        # Virtual interface doesn't exist, try to create it
-                        print(f"[network-manager] Virtual AP interface {HOTSPOT_INTERFACE} not found, creating...", flush=True)
-                        create_virtual_ap_interface(HOTSPOT_INTERFACE)
+                # NetworkManager handles AP+STA concurrent mode automatically
                 
                 # Try to start/restart hotspot
                 if not is_hotspot_running() or not verify_hotspot_broadcasting():
@@ -1124,15 +555,11 @@ def main_loop():
                         if ensure_hotspot_config():
                             start_hotspot()
                     else:
-                        # Service is running but not broadcasting - restart it
-                        print("[network-manager] Hotspot service running but not broadcasting, restarting...", flush=True)
-                        subprocess.run(
-                            ["systemctl", "restart", HOSTAPD_SERVICE],
-                            check=False,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL
-                        )
+                        # Connection is active but not broadcasting - try reactivating
+                        print("[network-manager] Hotspot connection active but not broadcasting, reactivating...", flush=True)
+                        stop_hotspot()
                         time.sleep(2)
+                        start_hotspot()
                 
                 last_check = now
             
@@ -1158,4 +585,3 @@ if __name__ == "__main__":
         print(f"Hotspot running: {is_hotspot_running()}", flush=True)
     else:
         main_loop()
-

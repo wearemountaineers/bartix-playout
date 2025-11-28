@@ -6,7 +6,7 @@ cat <<USAGE
 Usage: $0 [--remove-packages] [--remove-user-from-audio <username>]
 
 Options:
-  --remove-packages          Also remove installed packages (hostapd, dnsmasq, etc.)
+  --remove-packages          Also remove installed packages (NetworkManager, etc.)
   --remove-user-from-audio    Remove user from audio group (specify username)
 
 Examples:
@@ -38,8 +38,11 @@ echo "Stopping services..."
 sudo systemctl stop stream-player.service 2>/dev/null || true
 sudo systemctl stop network-manager.service 2>/dev/null || true
 sudo systemctl stop config-server.service 2>/dev/null || true
-sudo systemctl stop hostapd 2>/dev/null || true
-sudo systemctl stop dnsmasq 2>/dev/null || true
+
+# Deactivate NetworkManager hotspot connection
+echo "Deactivating hotspot connection..."
+nmcli connection down Hotspot 2>/dev/null || true
+nmcli connection delete Hotspot 2>/dev/null || true
 
 # Disable services
 echo "Disabling services..."
@@ -63,24 +66,13 @@ sudo rm -f /usr/local/bin/network-config.py
 
 # Remove configuration files
 echo "Removing configuration files..."
-sudo rm -f /etc/hostapd/hostapd.conf
-sudo rm -f /etc/dnsmasq.d/hotspot.conf
 sudo rm -rf /usr/local/share/bartix
 
-# Remove wpa_supplicant systemd override
-echo "Removing wpa_supplicant systemd override..."
-sudo rm -rf /etc/systemd/system/wpa_supplicant.service.d
-sudo systemctl daemon-reload
+# Remove NetworkManager WiFi client connection if it exists
+echo "Removing NetworkManager WiFi client connection..."
+nmcli connection delete WiFi-Client 2>/dev/null || true
 
-# Clean up network configuration
-echo "Cleaning up network configuration..."
-if [ -f /etc/dhcpcd.conf ]; then
-    # Remove both old (wlan0) and new (wlan0_ap) denyinterfaces entries
-    sudo sed -i '/denyinterfaces wlan0$/d' /etc/dhcpcd.conf 2>/dev/null || true
-    sudo sed -i '/denyinterfaces wlan0_ap/d' /etc/dhcpcd.conf 2>/dev/null || true
-fi
-
-# Remove virtual AP interface if it exists
+# Remove virtual AP interface if it exists (NetworkManager may have created it)
 echo "Removing virtual AP interface..."
 if ip link show wlan0_ap >/dev/null 2>&1; then
     sudo ip link set wlan0_ap down 2>/dev/null || true
@@ -88,14 +80,8 @@ if ip link show wlan0_ap >/dev/null 2>&1; then
     echo "Virtual AP interface wlan0_ap removed"
 fi
 
-if [ -f /etc/default/hostapd ]; then
-    sudo sed -i '/DAEMON_CONF="\/etc\/hostapd\/hostapd.conf"/d' /etc/default/hostapd 2>/dev/null || true
-fi
-
-# Restart network services to restore normal operation
-echo "Restarting network services..."
-sudo systemctl restart dhcpcd 2>/dev/null || true
-sudo systemctl restart wpa_supplicant 2>/dev/null || true
+# NetworkManager will continue to manage network normally
+echo "NetworkManager will continue managing network connections"
 
 # Remove user from audio group if requested
 if [ -n "$REMOVE_USER" ]; then
@@ -106,9 +92,12 @@ fi
 # Remove packages if requested
 if [ "$REMOVE_PACKAGES" = true ]; then
     echo "Removing packages..."
-    sudo apt-get remove --purge -y hostapd dnsmasq iw wireless-tools rfkill 2>/dev/null || true
+    echo "Warning: NetworkManager is a system service and may be used by other software."
+    echo "Skipping NetworkManager removal to avoid breaking system networking."
+    echo "To remove NetworkManager manually, run: sudo apt-get remove --purge network-manager"
+    sudo apt-get remove --purge -y iw wireless-tools rfkill 2>/dev/null || true
     sudo apt-get autoremove -y 2>/dev/null || true
-    echo "Note: python3, mpv, ca-certificates, and alsa-utils were kept (may be used by other software)"
+    echo "Note: python3, mpv, ca-certificates, alsa-utils, and network-manager were kept (may be used by other software)"
 fi
 
 echo ""

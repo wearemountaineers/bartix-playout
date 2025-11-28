@@ -33,7 +33,7 @@ fi
 #Packages
 
 sudo apt-get update
-sudo apt-get install -y python3 mpv ca-certificates alsa-utils hostapd dnsmasq iw wireless-tools rfkill
+sudo apt-get install -y python3 mpv ca-certificates alsa-utils network-manager iw wireless-tools rfkill
 
 #Copy files
 
@@ -48,9 +48,7 @@ sudo install -m 0644 systemd/stream-player.service /etc/systemd/system/stream-pl
 sudo install -m 0644 systemd/network-manager.service /etc/systemd/system/network-manager.service
 sudo install -m 0644 systemd/config-server.service /etc/systemd/system/config-server.service
 
-# Copy hotspot configuration files (hostapd.conf is copied later, before configuring)
-sudo mkdir -p /etc/dnsmasq.d
-sudo install -m 0644 config/dnsmasq-hotspot.conf /etc/dnsmasq.d/hotspot.conf
+# NetworkManager will handle hotspot configuration - no config files needed
 
 # Copy web template
 sudo mkdir -p /usr/local/share/bartix/templates
@@ -58,10 +56,6 @@ sudo install -m 0644 templates/config.html /usr/local/share/bartix/templates/con
 
 # Create directory for web password file
 sudo mkdir -p /etc/bartix
-
-# Configure hostapd to use our config
-# First, ensure the config file exists (copy it before configuring)
-sudo mkdir -p /etc/hostapd
 
 # Generate unique SSID with random number (last 4 digits of MAC address or random)
 UNIQUE_ID=""
@@ -76,117 +70,48 @@ fi
 HOTSPOT_SSID="bartix-config-${UNIQUE_ID}"
 HOTSPOT_PASSWORD="bartix-${UNIQUE_ID}"
 
-# Create hostapd config with unique SSID
-sudo sed "s/ssid=bartix-config/ssid=${HOTSPOT_SSID}/" config/hostapd.conf | \
-sudo sed "s/wpa_passphrase=bartix-config/wpa_passphrase=${HOTSPOT_PASSWORD}/" | \
-sudo tee /etc/hostapd/hostapd.conf > /dev/null
-
-# Ensure hostapd control interface directory exists
-sudo mkdir -p /var/run/hostapd
-sudo chown root:root /var/run/hostapd
-sudo chmod 755 /var/run/hostapd
-
-# Unmask hostapd service (it might be masked by default)
-sudo systemctl unmask hostapd 2>/dev/null || true
-
-# Configure /etc/default/hostapd
-if [ -f /etc/default/hostapd ]; then
-    sudo sed -i 's|^#DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
-    sudo sed -i 's|^DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
-    # Ensure DAEMON_CONF is set
-    if ! grep -q "^DAEMON_CONF=" /etc/default/hostapd; then
-        echo 'DAEMON_CONF="/etc/hostapd/hostapd.conf"' | sudo tee -a /etc/default/hostapd
-    fi
-else
-    # Create /etc/default/hostapd if it doesn't exist
-    echo 'DAEMON_CONF="/etc/hostapd/hostapd.conf"' | sudo tee /etc/default/hostapd
-fi
-
 # Update network-manager.service with unique SSID, password, and interface
 sudo sed -i "s|Environment=HOTSPOT_SSID=.*|Environment=HOTSPOT_SSID=${HOTSPOT_SSID}|" /etc/systemd/system/network-manager.service
 sudo sed -i "s|Environment=HOTSPOT_PASSWORD=.*|Environment=HOTSPOT_PASSWORD=${HOTSPOT_PASSWORD}|" /etc/systemd/system/network-manager.service
 sudo sed -i "s|Environment=HOTSPOT_INTERFACE=.*|Environment=HOTSPOT_INTERFACE=wlan0_ap|" /etc/systemd/system/network-manager.service
 
-# Disable dnsmasq from starting automatically (we'll control it)
-sudo systemctl disable dnsmasq || true
-sudo systemctl stop dnsmasq || true
-
-# Disable hostapd from starting automatically (network-manager will start it when ready)
-# This prevents hostapd from failing at boot when wlan0_ap doesn't exist yet
+# Disable conflicting network services (NetworkManager will handle everything)
+echo "Disabling conflicting network services..."
+sudo systemctl disable dhcpcd || true
+sudo systemctl stop dhcpcd || true
 sudo systemctl disable hostapd || true
 sudo systemctl stop hostapd || true
-
-# Create virtual AP interface for concurrent AP+STA support
-echo "Creating virtual AP interface wlan0_ap..."
-if command -v iw >/dev/null 2>&1 && [ -e /sys/class/net/wlan0 ]; then
-    # Unblock WiFi first
-    sudo rfkill unblock wifi 2>/dev/null || true
-    sleep 1
-    # Create virtual AP interface if it doesn't exist
-    if ! ip link show wlan0_ap >/dev/null 2>&1; then
-        sudo iw phy phy0 interface add wlan0_ap type __ap 2>/dev/null || true
-        sleep 1
-        if ip link show wlan0_ap >/dev/null 2>&1; then
-            echo "Virtual AP interface wlan0_ap created successfully"
-        else
-            echo "Warning: Failed to create virtual AP interface wlan0_ap"
-        fi
-    else
-        echo "Virtual AP interface wlan0_ap already exists"
-    fi
-fi
-
-# Configure dhcpcd to deny managing the virtual AP interface (wlan0_ap)
-# Note: wlan0 should NOT be denied - it's used for STA mode and needs dhcpcd
-if [ -f /etc/dhcpcd.conf ]; then
-    # Remove old denyinterfaces wlan0 if present (from previous installations)
-    sudo sed -i '/denyinterfaces wlan0$/d' /etc/dhcpcd.conf
-    # Add denyinterfaces wlan0_ap to prevent dhcpcd from managing the virtual AP interface
-    if ! grep -q "denyinterfaces wlan0_ap" /etc/dhcpcd.conf; then
-        echo "denyinterfaces wlan0_ap" | sudo tee -a /etc/dhcpcd.conf
-        echo "Added 'denyinterfaces wlan0_ap' to dhcpcd.conf"
-    fi
-fi
-
-# Configure wpa_supplicant to use wlan0 only (not wlan0_ap)
-# Create systemd override to force wpa_supplicant to use wlan0
-echo "Configuring wpa_supplicant to use wlan0 only..."
-sudo mkdir -p /etc/systemd/system/wpa_supplicant.service.d
-sudo tee /etc/systemd/system/wpa_supplicant.service.d/override.conf > /dev/null <<EOF
-[Service]
-# Force wpa_supplicant to use wlan0 only (not wlan0_ap)
-# This is critical for AP+STA concurrent operation
-ExecStart=
-ExecStart=/sbin/wpa_supplicant -u -s -O /run/wpa_supplicant -i wlan0 -c /etc/wpa_supplicant/wpa_supplicant.conf
-EOF
-echo "Created wpa_supplicant systemd override to use wlan0 only"
-
-# Stop wpa_supplicant if running (will be started when WiFi is configured)
+sudo systemctl disable dnsmasq || true
+sudo systemctl stop dnsmasq || true
+sudo systemctl disable wpa_supplicant || true
 sudo systemctl stop wpa_supplicant || true
 
-# Enable wpa_supplicant if WiFi credentials are already configured
-# This ensures WiFi auto-connects on boot if credentials exist
-if [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
-    # Check if there's a network block (not just country code)
-    if grep -q "^network=" /etc/wpa_supplicant/wpa_supplicant.conf || \
-       grep -q "^[[:space:]]*ssid=" /etc/wpa_supplicant/wpa_supplicant.conf; then
-        echo "WiFi credentials found, enabling wpa_supplicant for auto-start on boot..."
-        sudo systemctl enable wpa_supplicant || true
-    else
-        echo "No WiFi network configured, wpa_supplicant will be enabled when WiFi is configured"
+# Enable and start NetworkManager
+echo "Enabling NetworkManager..."
+sudo systemctl enable NetworkManager || true
+sudo systemctl start NetworkManager || true
+
+# Wait for NetworkManager to be ready
+echo "Waiting for NetworkManager to be ready..."
+for i in {1..10}; do
+    if sudo systemctl is-active --quiet NetworkManager; then
+        sleep 2
+        if nmcli general status >/dev/null 2>&1; then
+            echo "NetworkManager is ready"
+            break
+        fi
     fi
-else
-    echo "No wpa_supplicant.conf found, wpa_supplicant will be enabled when WiFi is configured"
-fi
+    sleep 1
+done
 
-sudo systemctl daemon-reload
+# Configure NetworkManager to manage WiFi interfaces
+echo "Configuring NetworkManager..."
+# Ensure NetworkManager manages WiFi
+sudo nmcli radio wifi on || true
 
-# Configure WiFi country code (required for proper AP mode operation)
-echo "Configuring WiFi country code..."
-# Try to detect country from system, default to NL (Netherlands)
+# Set WiFi country code in NetworkManager
 COUNTRY_CODE="${WIFI_COUNTRY:-NL}"
 if [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
-    # Extract country code from existing config if present
     EXISTING_COUNTRY=$(grep -i "^country=" /etc/wpa_supplicant/wpa_supplicant.conf | cut -d= -f2 | tr -d ' ' || echo "")
     if [ -n "$EXISTING_COUNTRY" ]; then
         COUNTRY_CODE="$EXISTING_COUNTRY"
@@ -196,19 +121,12 @@ fi
 # Set country code via iw (immediate effect)
 sudo iw reg set "$COUNTRY_CODE" 2>/dev/null || true
 
-# Set country code in wpa_supplicant.conf (persistent)
-if [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
-    if ! grep -q "^country=" /etc/wpa_supplicant/wpa_supplicant.conf; then
-        # Add country code at the beginning
-        sudo sed -i "1i country=$COUNTRY_CODE" /etc/wpa_supplicant/wpa_supplicant.conf
-    else
-        sudo sed -i "s/^country=.*/country=$COUNTRY_CODE/i" /etc/wpa_supplicant/wpa_supplicant.conf
-    fi
-else
-    # Create wpa_supplicant.conf with country code
-    sudo mkdir -p /etc/wpa_supplicant
-    echo "country=$COUNTRY_CODE" | sudo tee /etc/wpa_supplicant/wpa_supplicant.conf > /dev/null
-fi
+# NetworkManager will create the hotspot connection when network-manager.py starts
+# No need to create it here - network-manager.py will handle it
+
+sudo systemctl daemon-reload
+
+# WiFi country code is already set above in NetworkManager configuration section
 
 # Configure firewall to allow config server (if ufw is installed)
 if command -v ufw >/dev/null 2>&1; then
@@ -238,7 +156,7 @@ sudo chmod +x /usr/local/bin/bootstream.py
 echo "Verifying installation..."
 MISSING_FILES=0
 for file in /usr/local/bin/bootstream.py /usr/local/bin/network-manager.py /usr/local/bin/config-server.py /usr/local/bin/network-config.py \
-            /etc/hostapd/hostapd.conf /etc/dnsmasq.d/hotspot.conf /usr/local/share/bartix/templates/config.html; do
+            /usr/local/share/bartix/templates/config.html; do
     if [ ! -f "$file" ]; then
         echo "ERROR: Missing file: $file"
         MISSING_FILES=$((MISSING_FILES + 1))
@@ -282,28 +200,26 @@ fi
 sudo systemctl start network-manager.service
 sleep 5  # Give network-manager more time to initialize and start hotspot
 
-# Verify hotspot is actually broadcasting on wlan0_ap
-echo "Verifying hotspot is broadcasting on wlan0_ap..."
+# Verify hotspot is actually broadcasting (NetworkManager will create it)
+echo "Verifying hotspot is being created by NetworkManager..."
 HOTSPOT_VERIFIED=false
-for i in {1..3}; do
+for i in {1..5}; do
     sleep 2
-    if sudo iw dev wlan0_ap info 2>/dev/null | grep -q "type AP" && \
-       sudo systemctl is-active --quiet hostapd; then
-        HOTSPOT_VERIFIED=true
-        break
+    # Check if NetworkManager has created the hotspot connection
+    if nmcli connection show "Hotspot" >/dev/null 2>&1; then
+        # Check if interface exists and is in AP mode
+        if ip link show wlan0_ap >/dev/null 2>&1; then
+            if sudo iw dev wlan0_ap info 2>/dev/null | grep -q "type AP"; then
+                HOTSPOT_VERIFIED=true
+                break
+            fi
+        fi
     fi
 done
 
 if [ "$HOTSPOT_VERIFIED" = false ]; then
-    echo "Hotspot not broadcasting, restarting hostapd..."
-    sudo systemctl restart hostapd
-    sleep 3
-    if sudo iw dev wlan0_ap info 2>/dev/null | grep -q "type AP"; then
-        echo "✓ Hotspot verified after restart"
-    else
-        echo "Warning: Hotspot may not be broadcasting. Check logs:"
-        echo "  sudo journalctl -u hostapd -n 50"
-    fi
+    echo "Warning: Hotspot may not be broadcasting yet. NetworkManager will create it when network-manager.py starts."
+    echo "Check logs: sudo journalctl -u network-manager.service -n 50"
 else
     echo "✓ Hotspot verified and broadcasting on wlan0_ap"
 fi
