@@ -905,6 +905,43 @@ def main_loop():
     
     print("[network-manager] Starting network manager...", flush=True)
     
+    # Ensure wpa_supplicant is enabled and started if WiFi credentials exist
+    wpa_supplicant_conf = "/etc/wpa_supplicant/wpa_supplicant.conf"
+    if os.path.exists(wpa_supplicant_conf):
+        # Check if there's a network block (not just country code)
+        has_network = False
+        try:
+            with open(wpa_supplicant_conf, 'r') as f:
+                content = f.read()
+                if "network=" in content or "ssid=" in content:
+                    has_network = True
+        except Exception:
+            pass
+        
+        if has_network:
+            print("[network-manager] WiFi credentials found, ensuring wpa_supplicant is enabled and started...", flush=True)
+            # Enable wpa_supplicant if not already enabled
+            subprocess.run(
+                ["systemctl", "enable", "wpa_supplicant"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            # Start wpa_supplicant if not running
+            result = subprocess.run(
+                ["systemctl", "is-active", "wpa_supplicant"],
+                check=False
+            )
+            if result.returncode != 0:
+                print("[network-manager] Starting wpa_supplicant...", flush=True)
+                subprocess.run(
+                    ["systemctl", "start", "wpa_supplicant"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                time.sleep(2)  # Give wpa_supplicant time to start
+    
     # Wait for physical WiFi interface (wlan0) to be available
     print("[network-manager] Waiting for physical WiFi interface (wlan0) to be available...", flush=True)
     interface_wait_timeout = 30

@@ -2,7 +2,7 @@
 Description=Network Manager: Detects connectivity and manages WiFi hotspot
 Wants=network-online.target
 # Don't wait for network-online, just start after basic services
-After=basic.target
+After=basic.target wpa_supplicant.service
 Before=stream-player.service
 # Wait a bit for system to settle
 DefaultDependencies=yes

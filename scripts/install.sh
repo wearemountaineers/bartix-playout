@@ -161,6 +161,22 @@ echo "Created wpa_supplicant systemd override to use wlan0 only"
 
 # Stop wpa_supplicant if running (will be started when WiFi is configured)
 sudo systemctl stop wpa_supplicant || true
+
+# Enable wpa_supplicant if WiFi credentials are already configured
+# This ensures WiFi auto-connects on boot if credentials exist
+if [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
+    # Check if there's a network block (not just country code)
+    if grep -q "^network=" /etc/wpa_supplicant/wpa_supplicant.conf || \
+       grep -q "^[[:space:]]*ssid=" /etc/wpa_supplicant/wpa_supplicant.conf; then
+        echo "WiFi credentials found, enabling wpa_supplicant for auto-start on boot..."
+        sudo systemctl enable wpa_supplicant || true
+    else
+        echo "No WiFi network configured, wpa_supplicant will be enabled when WiFi is configured"
+    fi
+else
+    echo "No wpa_supplicant.conf found, wpa_supplicant will be enabled when WiFi is configured"
+fi
+
 sudo systemctl daemon-reload
 
 # Configure WiFi country code (required for proper AP mode operation)

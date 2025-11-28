@@ -166,6 +166,16 @@ def configure_wifi(ssid, password=None):
     
     print(f"[network-config] WiFi configuration updated", flush=True)
     
+    # Enable wpa_supplicant to start on boot (so WiFi auto-connects after reboot)
+    print("[network-config] Enabling wpa_supplicant to start on boot...", flush=True)
+    subprocess.run(
+        ["systemctl", "enable", "wpa_supplicant"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE
+    )
+    print("[network-config] wpa_supplicant enabled for auto-start on boot", flush=True)
+    
     # Restart network services to apply configuration
     restart_network_services()
     
