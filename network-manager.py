@@ -169,7 +169,16 @@ def is_hotspot_running():
                 check=False
             )
             if "type AP" in result.stdout:
-                return True
+                # Also check if dnsmasq is running (required for DHCP)
+                dnsmasq_result = subprocess.run(
+                    ["systemctl", "is-active", "--quiet", DNSMASQ_SERVICE],
+                    check=False
+                )
+                if dnsmasq_result.returncode == 0:
+                    return True
+                else:
+                    print(f"[network-manager] Warning: dnsmasq is not running (DHCP will not work)", flush=True)
+                    return False
     except Exception:
         pass
     return False
@@ -535,7 +544,35 @@ def start_hotspot():
         )
         if result.returncode != 0:
             print(f"[network-manager] Error starting dnsmasq: {result.stderr}", flush=True)
-            # Continue anyway, hostapd might still work
+            # Try to get more details from journalctl
+            journal_result = subprocess.run(
+                ["journalctl", "-u", DNSMASQ_SERVICE, "-n", "10", "--no-pager"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if journal_result.returncode == 0:
+                print(f"[network-manager] dnsmasq logs:\n{journal_result.stdout}", flush=True)
+        else:
+            # Verify dnsmasq is actually running
+            time.sleep(1)
+            verify_result = subprocess.run(
+                ["systemctl", "is-active", "--quiet", DNSMASQ_SERVICE],
+                check=False
+            )
+            if verify_result.returncode == 0:
+                print(f"[network-manager] dnsmasq started successfully", flush=True)
+            else:
+                print(f"[network-manager] Warning: dnsmasq start command succeeded but service is not active", flush=True)
+                # Try to get status
+                status_result = subprocess.run(
+                    ["systemctl", "status", DNSMASQ_SERVICE, "--no-pager", "-n", "10"],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                if status_result.returncode == 0:
+                    print(f"[network-manager] dnsmasq status:\n{status_result.stdout}", flush=True)
         
         time.sleep(1)
         
@@ -560,6 +597,43 @@ def start_hotspot():
             if journal_result.returncode == 0:
                 print(f"[network-manager] hostapd logs:\n{journal_result.stdout}", flush=True)
             return False
+        
+        # After hostapd starts, verify dnsmasq is still running and restart if needed
+        # This is important because dnsmasq might fail to bind if started before interface is ready
+        time.sleep(2)
+        dnsmasq_check = subprocess.run(
+            ["systemctl", "is-active", "--quiet", DNSMASQ_SERVICE],
+            check=False
+        )
+        if dnsmasq_check.returncode != 0:
+            print(f"[network-manager] dnsmasq not running after hostapd start, restarting...", flush=True)
+            restart_result = subprocess.run(
+                ["systemctl", "restart", DNSMASQ_SERVICE],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            time.sleep(1)
+            # Verify again
+            dnsmasq_check2 = subprocess.run(
+                ["systemctl", "is-active", "--quiet", DNSMASQ_SERVICE],
+                check=False
+            )
+            if dnsmasq_check2.returncode == 0:
+                print(f"[network-manager] dnsmasq restarted successfully", flush=True)
+            else:
+                print(f"[network-manager] Error: dnsmasq failed to start after restart", flush=True)
+                if restart_result.stderr:
+                    print(f"[network-manager] dnsmasq restart error: {restart_result.stderr}", flush=True)
+                # Get dnsmasq logs for debugging
+                journal_result = subprocess.run(
+                    ["journalctl", "-u", DNSMASQ_SERVICE, "-n", "20", "--no-pager"],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                if journal_result.returncode == 0:
+                    print(f"[network-manager] dnsmasq logs:\n{journal_result.stdout}", flush=True)
         
         time.sleep(4)  # Give hostapd more time to initialize
         
