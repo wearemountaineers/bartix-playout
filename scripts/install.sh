@@ -111,8 +111,10 @@ sudo sed -i "s|Environment=HOTSPOT_INTERFACE=.*|Environment=HOTSPOT_INTERFACE=wl
 sudo systemctl disable dnsmasq || true
 sudo systemctl stop dnsmasq || true
 
-# Ensure hostapd is enabled (so it can be started by network-manager)
-sudo systemctl enable hostapd || true
+# Disable hostapd from starting automatically (network-manager will start it when ready)
+# This prevents hostapd from failing at boot when wlan0_ap doesn't exist yet
+sudo systemctl disable hostapd || true
+sudo systemctl stop hostapd || true
 
 # Create virtual AP interface for concurrent AP+STA support
 echo "Creating virtual AP interface wlan0_ap..."
