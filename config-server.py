@@ -269,15 +269,27 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
                     return
                 password = data.get('wifi_password', '')
             elif network_type == "lan":
-                # Validate LAN fields
-                ip = data.get('lan_ip')
-                subnet = data.get('lan_subnet')
-                gateway = data.get('lan_gateway')
-                dns = data.get('lan_dns', '8.8.8.8')
+                # Check if DHCP is requested
+                lan_dhcp = data.get('lan_dhcp', False)
+                if isinstance(lan_dhcp, str):
+                    lan_dhcp = lan_dhcp.lower() in ('true', '1', 'yes', 'on')
                 
-                if not all([ip, subnet, gateway]):
-                    self.send_json_response(400, {"error": "IP, subnet, and gateway are required for LAN"})
-                    return
+                if not lan_dhcp:
+                    # Validate LAN static IP fields
+                    ip = data.get('lan_ip')
+                    subnet = data.get('lan_subnet')
+                    gateway = data.get('lan_gateway')
+                    dns = data.get('lan_dns', '8.8.8.8')
+                    
+                    if not all([ip, subnet, gateway]):
+                        self.send_json_response(400, {"error": "IP, subnet, and gateway are required for LAN static IP, or use DHCP"})
+                        return
+                else:
+                    # DHCP mode - no static IP fields needed
+                    ip = None
+                    subnet = None
+                    gateway = None
+                    dns = None
             else:
                 self.send_json_response(400, {"error": "Invalid network type"})
                 return
@@ -301,13 +313,16 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
                 if password:
                     cmd.extend(["--password", password])
             else:  # lan
-                cmd.extend([
-                    "--ip", ip,
-                    "--subnet", subnet,
-                    "--gateway", gateway
-                ])
-                if dns:
-                    cmd.extend(["--dns", dns])
+                if lan_dhcp:
+                    cmd.extend(["--dhcp"])
+                else:
+                    cmd.extend([
+                        "--ip", ip,
+                        "--subnet", subnet,
+                        "--gateway", gateway
+                    ])
+                    if dns:
+                        cmd.extend(["--dns", dns])
             
             # Run configuration script
             result = subprocess.run(

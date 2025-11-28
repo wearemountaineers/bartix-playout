@@ -288,11 +288,13 @@ The interface allows you to configure:
    - Scan for available networks
    - Test WiFi connection before applying
 
-2. **LAN Static IP Configuration**:
-   - Static IP address
-   - Subnet mask
-   - Gateway
-   - DNS server
+2. **LAN Configuration**:
+   - **DHCP Mode**: Automatically obtain IP address from router (default)
+   - **Static IP Mode**: Manually configure:
+     - Static IP address
+     - Subnet mask
+     - Gateway
+     - DNS server
 
 3. **Hotspot Configuration**:
    - Hotspot SSID (with unique ID)

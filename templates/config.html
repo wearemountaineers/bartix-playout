@@ -315,20 +315,35 @@
                 
                 <div id="lan-config" class="network-config">
                     <div class="form-group">
-                        <label for="lan_ip">Static IP Address</label>
-                        <input type="text" id="lan_ip" name="lan_ip" placeholder="192.168.1.100" pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$">
+                        <label>IP Configuration Method</label>
+                        <div style="display: flex; gap: 20px; margin-top: 10px;">
+                            <label style="display: flex; align-items: center; cursor: pointer;">
+                                <input type="radio" id="lan_dhcp" name="lan_ip_method" value="dhcp" checked style="margin-right: 8px;">
+                                <span>DHCP (Automatic)</span>
+                            </label>
+                            <label style="display: flex; align-items: center; cursor: pointer;">
+                                <input type="radio" id="lan_static" name="lan_ip_method" value="static" style="margin-right: 8px;">
+                                <span>Static IP</span>
+                            </label>
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label for="lan_subnet">Subnet Mask</label>
-                        <input type="text" id="lan_subnet" name="lan_subnet" placeholder="255.255.255.0" pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$">
-                    </div>
-                    <div class="form-group">
-                        <label for="lan_gateway">Gateway</label>
-                        <input type="text" id="lan_gateway" name="lan_gateway" placeholder="192.168.1.1" pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$">
-                    </div>
-                    <div class="form-group">
-                        <label for="lan_dns">DNS Server</label>
-                        <input type="text" id="lan_dns" name="lan_dns" placeholder="8.8.8.8" pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$">
+                    <div id="lan-static-fields" style="display: none;">
+                        <div class="form-group">
+                            <label for="lan_ip">Static IP Address</label>
+                            <input type="text" id="lan_ip" name="lan_ip" placeholder="192.168.1.100" pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$">
+                        </div>
+                        <div class="form-group">
+                            <label for="lan_subnet">Subnet Mask</label>
+                            <input type="text" id="lan_subnet" name="lan_subnet" placeholder="255.255.255.0" pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$">
+                        </div>
+                        <div class="form-group">
+                            <label for="lan_gateway">Gateway</label>
+                            <input type="text" id="lan_gateway" name="lan_gateway" placeholder="192.168.1.1" pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$">
+                        </div>
+                        <div class="form-group">
+                            <label for="lan_dns">DNS Server</label>
+                            <input type="text" id="lan_dns" name="lan_dns" placeholder="8.8.8.8" pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$">
+                        </div>
                     </div>
                 </div>
                 
@@ -561,9 +576,25 @@
                     wifiConfig.classList.remove('active');
                     lanConfig.classList.add('active');
                     document.querySelectorAll('#wifi-config input').forEach(i => i.required = false);
-                    document.querySelectorAll('#lan-config input').forEach(i => i.required = true);
+                    updateLanFieldsRequirement();
                 }
             });
+        });
+        
+        // Handle LAN IP method change (DHCP vs Static)
+        const lanIpMethodRadios = document.querySelectorAll('input[name="lan_ip_method"]');
+        const lanStaticFields = document.getElementById('lan-static-fields');
+        
+        function updateLanFieldsRequirement() {
+            const isStatic = document.getElementById('lan_static').checked;
+            lanStaticFields.style.display = isStatic ? 'block' : 'none';
+            document.querySelectorAll('#lan-static-fields input').forEach(i => {
+                i.required = isStatic;
+            });
+        }
+        
+        lanIpMethodRadios.forEach(radio => {
+            radio.addEventListener('change', updateLanFieldsRequirement);
         });
         
         form.addEventListener('submit', async (e) => {
@@ -575,14 +606,20 @@
                 data[key] = value;
             });
             
+            // Add DHCP flag for LAN if DHCP is selected
+            if (data.network_type === 'lan' && data.lan_ip_method === 'dhcp') {
+                data.lan_dhcp = true;
+            }
+            
             statusDiv.className = 'status info';
             statusDiv.textContent = 'Applying configuration...';
             statusDiv.style.display = 'block';
             
             try {
+                const headers = authHeader ? { 'Authorization': authHeader, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
                 const response = await fetch('/configure', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: headers,
                     body: JSON.stringify(data)
                 });
                 

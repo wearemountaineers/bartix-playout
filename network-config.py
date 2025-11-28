@@ -224,6 +224,86 @@ def clear_wifi():
         return False
 
 
+def configure_lan_dhcp(interface="eth0"):
+    """
+    Configure DHCP for LAN interface using NetworkManager.
+    
+    Args:
+        interface: Network interface name (default: eth0)
+    """
+    print(f"[network-config] Configuring LAN with DHCP on {interface}", flush=True)
+    
+    connection_name = f"Wired-{interface}"
+    
+    # Check if connection exists
+    result = nmcli_run(["connection", "show", connection_name], check=False)
+    connection_exists = (result.returncode == 0)
+    
+    if connection_exists:
+        print(f"[network-config] Updating existing LAN connection '{connection_name}' to use DHCP...", flush=True)
+        # Update existing connection to use DHCP
+        nmcli_run(["connection", "modify", connection_name, "ipv4.method", "auto"], check=False)
+        # Remove static IP settings if they exist
+        nmcli_run(["connection", "modify", connection_name, "ipv4.addresses", ""], check=False)
+        nmcli_run(["connection", "modify", connection_name, "ipv4.gateway", ""], check=False)
+        nmcli_run(["connection", "modify", connection_name, "ipv4.dns", ""], check=False)
+    else:
+        print(f"[network-config] Creating new LAN connection '{connection_name}' with DHCP...", flush=True)
+        # Create new connection with DHCP
+        result = nmcli_run([
+            "connection", "add",
+            "type", "ethernet",
+            "con-name", connection_name,
+            "ifname", interface,
+            "ipv4.method", "auto",
+            "autoconnect", "yes"
+        ])
+        
+        if result.returncode != 0:
+            print(f"[network-config] Error creating LAN connection: {result.stderr}", flush=True)
+            return False
+    
+    print(f"[network-config] LAN DHCP configuration updated", flush=True)
+    
+    # Activate the connection
+    print("[network-config] Activating LAN connection...", flush=True)
+    result = nmcli_run(["connection", "up", connection_name], check=False)
+    
+    if result.returncode != 0:
+        print(f"[network-config] Warning: Failed to activate connection: {result.stderr}", flush=True)
+        print("[network-config] Connection will be activated automatically when interface is available", flush=True)
+    
+    # Wait a moment for DHCP to obtain IP
+    print("[network-config] Waiting for DHCP to obtain IP address...", flush=True)
+    time.sleep(3)
+    
+    # Check if IP was obtained
+    result = subprocess.run(
+        ["ip", "addr", "show", interface],
+        capture_output=True,
+        text=True,
+        check=False
+    )
+    has_ip = False
+    ip_address = None
+    if result.returncode == 0:
+        matches = re.findall(r'inet (\d+\.\d+\.\d+\.\d+)/', result.stdout)
+        for match in matches:
+            if match != "127.0.0.1":
+                has_ip = True
+                ip_address = match
+                break
+    
+    if has_ip:
+        print(f"[network-config] ✓ DHCP configuration successful!", flush=True)
+        print(f"[network-config] IP address: {ip_address}", flush=True)
+    else:
+        print(f"[network-config] ⚠ DHCP configuration applied but no IP address obtained yet", flush=True)
+        print(f"[network-config] DHCP will continue attempting to obtain an IP address", flush=True)
+    
+    return True
+
+
 def configure_lan_static(ip, subnet, gateway, dns="8.8.8.8", interface="eth0"):
     """
     Configure static IP for LAN interface using NetworkManager.
@@ -314,10 +394,11 @@ def main():
                        help="Clear WiFi credentials (delete NetworkManager connection)")
     
     # LAN arguments
-    parser.add_argument("--ip", help="Static IP address")
-    parser.add_argument("--subnet", help="Subnet mask")
-    parser.add_argument("--gateway", help="Gateway IP address")
-    parser.add_argument("--dns", default="8.8.8.8", help="DNS server (default: 8.8.8.8)")
+    parser.add_argument("--dhcp", action="store_true", help="Use DHCP for LAN (instead of static IP)")
+    parser.add_argument("--ip", help="Static IP address (required if not using --dhcp)")
+    parser.add_argument("--subnet", help="Subnet mask (required if not using --dhcp)")
+    parser.add_argument("--gateway", help="Gateway IP address (required if not using --dhcp)")
+    parser.add_argument("--dns", default="8.8.8.8", help="DNS server (default: 8.8.8.8, only used with static IP)")
     parser.add_argument("--interface", default="eth0", help="Network interface (default: eth0)")
     
     args = parser.parse_args()
@@ -336,12 +417,19 @@ def main():
             print("[network-config] Configuration applied successfully", flush=True)
             sys.exit(0)
         elif args.network_type == "lan":
-            if not all([args.ip, args.subnet, args.gateway]):
-                print("[network-config] Error: --ip, --subnet, and --gateway are required for LAN", flush=True)
-                sys.exit(1)
-            configure_lan_static(args.ip, args.subnet, args.gateway, args.dns, args.interface)
-            print("[network-config] Configuration applied successfully", flush=True)
-            sys.exit(0)
+            if args.dhcp:
+                # Configure LAN with DHCP
+                configure_lan_dhcp(args.interface)
+                print("[network-config] Configuration applied successfully", flush=True)
+                sys.exit(0)
+            else:
+                # Configure LAN with static IP
+                if not all([args.ip, args.subnet, args.gateway]):
+                    print("[network-config] Error: --ip, --subnet, and --gateway are required for LAN static IP, or use --dhcp", flush=True)
+                    sys.exit(1)
+                configure_lan_static(args.ip, args.subnet, args.gateway, args.dns, args.interface)
+                print("[network-config] Configuration applied successfully", flush=True)
+                sys.exit(0)
         else:
             print("[network-config] Error: --network-type or --clear-wifi is required", flush=True)
             sys.exit(1)
